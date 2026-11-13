@@ -44,6 +44,10 @@ add_subdirectory(third_party/yaml-cpp EXCLUDE_FROM_ALL)
 add_library(g1d_openmp INTERFACE)
 if(OpenMP_CXX_FOUND)
   target_link_libraries(g1d_openmp INTERFACE OpenMP::OpenMP_CXX)
+  if(NOT OpenMP_CXX_LIB_NAMES)
+    # MinGW: FindOpenMP reports only the compile flag; libgomp must be linked via the flag too.
+    target_link_options(g1d_openmp INTERFACE ${OpenMP_CXX_FLAGS})
+  endif()
 endif()
 
 add_subdirectory(src)
