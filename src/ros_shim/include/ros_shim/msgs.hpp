@@ -182,6 +182,9 @@ struct Marker
 {
   static constexpr int32_t ARROW = 0;
   static constexpr int32_t CUBE = 1;
+#ifdef DELETE
+#undef DELETE  // winnt.h
+#endif
   static constexpr int32_t SPHERE = 2;
   static constexpr int32_t CYLINDER = 3;
   static constexpr int32_t LINE_STRIP = 4;
