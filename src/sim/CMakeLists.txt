@@ -3,6 +3,7 @@ add_library(g1d_sim STATIC
   src/world.cpp
   src/sensors.cpp
   src/robot.cpp
+  src/nav_sim.cpp
 )
 target_include_directories(g1d_sim PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(g1d_sim PUBLIC g1d_common g1d_lio)
+target_link_libraries(g1d_sim PUBLIC g1d_common g1d_lio g1d_navcore)

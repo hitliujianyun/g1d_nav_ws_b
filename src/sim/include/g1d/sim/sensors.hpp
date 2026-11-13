@@ -35,6 +35,8 @@ public:
   Mid360Sim(const World & world, Mid360Params p = {});
   /// Generates all packets covering [t0, t1) for a LiDAR moving along `T_world_lidar`.
   std::vector<g1d::lio::LivoxPacket> scan(const PoseFn & T_world_lidar, double t0, double t1);
+  /// `n` returns from a static LiDAR pose, directly in world coordinates (no timing / motion).
+  std::vector<Eigen::Vector3f> worldPoints(const Eigen::Isometry3d & T_world_lidar, int n);
 
 private:
   const World & world_;

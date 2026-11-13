@@ -55,6 +55,27 @@ std::vector<g1d::lio::LivoxPacket> Mid360Sim::scan(
   return packets;
 }
 
+std::vector<Eigen::Vector3f> Mid360Sim::worldPoints(const Eigen::Isometry3d & T, int n)
+{
+  std::vector<Eigen::Vector3f> out;
+  out.reserve(n);
+  const double sin_lo = std::sin(p_.fov_min_deg * M_PI / 180.0);
+  const double sin_hi = std::sin(p_.fov_max_deg * M_PI / 180.0);
+  constexpr double kGolden = 0.6180339887498949;
+  constexpr double kSqrt2Frac = 0.4142135623730951;
+  for (int i = 0; i < n; ++i, ++k_) {
+    const double az = 2.0 * M_PI * std::fmod(k_ * kGolden, 1.0);
+    const double u = std::fmod(k_ * kSqrt2Frac + 0.5 * std::fmod(k_ * 0.000137, 1.0), 1.0);
+    const double sel = sin_lo + (sin_hi - sin_lo) * u;
+    const double cel = std::sqrt(std::max(0.0, 1.0 - sel * sel));
+    const Eigen::Vector3d dir_w = T.linear() * Eigen::Vector3d(cel * std::cos(az), cel * std::sin(az), sel);
+    const auto hit = world_.raycast(T.translation(), dir_w, p_.max_range);
+    if (!hit || *hit < p_.min_range) {continue;}
+    out.push_back((T.translation() + dir_w * (*hit + noise_(rng_))).cast<float>());
+  }
+  return out;
+}
+
 std::vector<ImuMeasurement> simulateImu(
   const PoseFn & T_world_imu, double t0, double t1, const ImuParams & p)
 {

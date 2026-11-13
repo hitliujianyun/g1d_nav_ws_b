@@ -49,4 +49,5 @@ endif()
 
 add_subdirectory(common)
 add_subdirectory(lio)
+add_subdirectory(nav)
 add_subdirectory(sim)

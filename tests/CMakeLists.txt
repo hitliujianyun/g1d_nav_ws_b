@@ -17,3 +17,12 @@ target_link_libraries(test_lio_units PRIVATE g1d_lio)
 g1d_add_test(test_lio_sim test_lio_sim.cpp)
 target_link_libraries(test_lio_sim PRIVATE g1d_lio g1d_sim)
 set_tests_properties(test_lio_sim PROPERTIES TIMEOUT 900)
+
+g1d_add_test(test_nav_units test_nav_units.cpp)
+target_link_libraries(test_nav_units PRIVATE g1d_navcore)
+target_compile_definitions(test_nav_units PRIVATE G1D_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+
+g1d_add_test(test_nav_sim test_nav_sim.cpp)
+target_link_libraries(test_nav_sim PRIVATE g1d_sim)
+target_compile_definitions(test_nav_sim PRIVATE G1D_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+set_tests_properties(test_nav_sim PROPERTIES TIMEOUT 1800)

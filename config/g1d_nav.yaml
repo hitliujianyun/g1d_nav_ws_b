@@ -1,0 +1,195 @@
+# g1d_ws configuration (design doc: design/G1D_LIO_MPPI_Nav_Plan.md §8).
+# Values marked TBD must be measured on the robot (see docs/CALIBRATION.md).
+
+system:
+  net_if: eth0                     # PC2 interface on 192.168.123.0/24
+  dds_domain: 0                    # real robot 0; unitree_sim_isaaclab uses 1
+  chassis_http: http://192.168.123.163:1448
+
+robot:
+  footprint: [[0.30, 0.28], [0.30, -0.28], [-0.30, -0.28], [-0.30, 0.28]]   # 557 x 525 mm + margin
+  rotate_radius: 0.38
+  chassis_laser: {xyz: [0.1871, -0.0161, 0.1009], rpy: [0.0, 0.0, 0.0]}     # URDF Lidar_Link (+base_to_agv_z)
+
+kinematics:
+  base_to_agv_z: 0.0               # TBD: AGV_link origin height above the floor
+  lift_offset: 0.0                 # TBD: total lift = lift_scale * hispeed_state.y + lift_offset
+  lift_scale: 1.0
+  head_to_livox: {xyz: [0.05, 0.0, 0.55], rpy: [3.14159265, -0.04, 0.0]}   # TBD: calibrate (inverted like G1?)
+  nav_pose:
+    waist_pitch: 0.0
+    arm_tuck: []                   # 14 joint values (motors 15..28); empty disables the arm check
+  lock_tolerance: {waist_deg: 2.0, arm_deg: 5.0, lift_m: 0.01, lift_speed: 0.005}
+  require_lock: true
+
+lidar:
+  source: livox_sdk2               # livox_sdk2 | unitree_topic
+  sdk_config: config/mid360s_config.json
+  frame_ms: 100
+  unitree_cloud_topic: rt/utlidar/cloud_livox_mid360
+  unitree_imu_topic: rt/utlidar/imu_livox_mid360
+
+self_filter:
+  # head_link frame boxes [xmin, xmax, ymin, ymax, zmin, zmax]; TBD from a static capture
+  boxes:
+    - [-0.20, 0.20, -0.25, 0.25, -0.95, 0.10]      # head, torso, column
+    - [-0.25, 0.40, -0.45, 0.45, -0.85, 0.05]      # tucked arms
+
+lio:
+  gyr_cov: 0.1
+  acc_cov: 0.1
+  b_gyr_cov: 0.0001
+  b_acc_cov: 0.0001
+  filter_size_surf: 0.3
+  filter_size_map: 0.4
+  cube_side_length: 1000.0
+  det_range: 60.0
+  fov_degree: 360.0
+  max_iteration: 3
+  extrinsic_est_en: false
+  extrinsic_T: [-0.011, -0.02329, 0.04412]    # LiDAR origin in the IMU frame (FAST-LIO mid360.yaml)
+  extrinsic_R: [1, 0, 0, 0, 1, 0, 0, 0, 1]
+  time_offset_lidar_to_imu: 0.0
+  blind: 0.6
+  point_filter_num: 1
+  max_range: 60.0
+  publish_cloud_voxel: 0.05
+  health:
+    min_effective_points: 300
+    bad_frames_to_fail: 3
+    max_step_translation_m: 0.3
+    max_step_yaw_deg: 15.0
+    max_process_time_s: 0.15
+    max_z_drift_m: 0.3
+    min_normal_eigenvalue: 0.02
+
+state:
+  wheel_timeout_s: 0.3
+  lio_timeout_s: 0.5
+  max_extrapolation_s: 0.3
+  consistency_window_s: 2.0
+  max_lio_wheel_translation_m: 0.3
+  max_lio_wheel_yaw_deg: 10.0
+  use_wheel_odom: true
+  allow_wheel_only: false
+
+costmap:
+  common:
+    clear_footprint: true
+    voxel:
+      z_min: 0.08
+      z_max: 1.85
+      z_resolution: 0.1
+      obstacle_max_range: 5.0
+      raytrace_max_range: 6.0
+      decay_s: 0.0                 # 0: obstacles persist until a ray clears them (safe in blind zones)
+      clear_every_n: 1
+      min_points_per_column: 1
+    scan:
+      obstacle_max_range: 4.0
+      raytrace_max_range: 5.0
+      inf_is_valid: false
+    inflation:
+      radius: 0.55
+      cost_scaling_factor: 3.0
+  local:
+    size_x: 6.0
+    size_y: 6.0
+    resolution: 0.05
+  global:
+    size_x: 20.0
+    size_y: 20.0
+    resolution: 0.1
+    voxel:
+      obstacle_max_range: 8.0
+      raytrace_max_range: 9.0
+      clear_every_n: 2
+
+planner:
+  replan_hz: 1.0
+  use_astar: false
+  allow_unknown: true
+  tolerance: 0.3
+  goal_search_radius: 0.5
+  goal_max_cost: 128
+  max_goal_distance: 9.0
+
+controller:
+  search_window: 2.0
+
+mppi:                              # Nav2 MPPI parameter names (namespace FollowPath)
+  rate_hz: 20.0                    # controller frequency; must equal 1 / model_dt
+  motion_model: DiffDrive
+  time_steps: 56
+  model_dt: 0.05
+  batch_size: 1000
+  iteration_count: 1
+  vx_max: 0.40
+  vx_min: -0.10
+  wz_max: 0.60
+  ax_max: 0.5
+  ax_min: -1.0
+  az_max: 1.0
+  vx_std: 0.2
+  wz_std: 0.4
+  temperature: 0.3
+  gamma: 0.015
+  prune_distance: 1.7
+  regenerate_noises: false
+  retry_attempt_limit: 1
+  critics: [ConstraintCritic, CostCritic, GoalCritic, GoalAngleCritic,
+            PathAlignCritic, PathFollowCritic, PathAngleCritic, PreferForwardCritic]
+  ConstraintCritic: {enabled: true, cost_power: 1, cost_weight: 4.0}
+  CostCritic: {enabled: true, cost_power: 1, cost_weight: 3.81, critical_cost: 300.0,
+               near_collision_cost: 253, consider_footprint: true, collision_cost: 1000000.0,
+               near_goal_distance: 1.0, trajectory_point_step: 2}
+  GoalCritic: {enabled: true, cost_power: 1, cost_weight: 5.0, threshold_to_consider: 1.4}
+  GoalAngleCritic: {enabled: true, cost_power: 1, cost_weight: 3.0, threshold_to_consider: 0.5}
+  PathAlignCritic: {enabled: true, cost_power: 1, cost_weight: 14.0, max_path_occupancy_ratio: 0.05,
+                    trajectory_point_step: 4, threshold_to_consider: 0.5, offset_from_furthest: 20,
+                    use_path_orientations: false}
+  PathFollowCritic: {enabled: true, cost_power: 1, cost_weight: 5.0, offset_from_furthest: 5,
+                     threshold_to_consider: 1.4}
+  PathAngleCritic: {enabled: true, cost_power: 1, cost_weight: 2.0, offset_from_furthest: 4,
+                    threshold_to_consider: 0.5, max_angle_to_furthest: 1.0, mode: 0}
+  PreferForwardCritic: {enabled: true, cost_power: 1, cost_weight: 5.0, threshold_to_consider: 0.5}
+
+manager:
+  progress_window_s: 8.0
+  progress_min_m: 0.2
+  mppi_fail_tolerance_s: 1.0
+  goal_stamp_max_age_s: 5.0
+  final_rotation_kp: 1.5
+  final_rotation_wmax: 0.5
+  simple_v_max: 0.3
+  simple_kp_yaw: 1.5
+  free_sector_range_m: 1.5
+  status_period_s: 0.1
+  recovery: [wait, clear, rotate]
+  recovery_wait_s: 2.0
+  recovery_clear_radius_m: 1.5
+  recovery_rotate_rad: 0.52
+  require_lio: true
+
+guard:                             # g1d_base_guard (python) + obstacle points published by g1d_nav
+  rate_hz: 30
+  vx_max: 0.50
+  vx_min: -0.10
+  wz_max: 0.60
+  acc_v: 0.5
+  brake_v: 1.5
+  acc_w: 1.0
+  cmd_timeout: 0.3
+  sensor_timeout: 0.5
+  zero_hold: 1.0                   # TBD from the cmd_vel_no_limit probe (tools/cmd_vel_probe.py)
+  front_x: 0.28
+  half_width: 0.30
+  body_x: 0.30
+  body_y: 0.28
+  rotate_radius: 0.38
+  stop_m: 0.45
+  slow_m: 1.20
+  rear_clear_m: 0.50
+  obstacle_points_range: 3.0
+  obstacle_points_voxel: 0.05
+  require_cloud: true              # false: guard runs on the chassis scan only (bring-up phase P1)
