@@ -46,3 +46,6 @@ target_link_libraries(g1d_nav2 PUBLIC g1d_ros_shim g1d_eigen g1d_openmp)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(g1d_nav2 PRIVATE -Wno-reorder -Wno-unused-variable -Wno-unknown-pragmas)
 endif()
+
+add_subdirectory(common)
+add_subdirectory(lio)

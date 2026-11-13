@@ -8,6 +8,7 @@
 #include <math.h>
 #include <algorithm>
 #include <memory.h>
+#include <memory>  // g1d: std::shared_ptr (previously pulled in transitively by PCL)
 #include <pcl/point_types.h>
 
 #define EPSS 1e-6

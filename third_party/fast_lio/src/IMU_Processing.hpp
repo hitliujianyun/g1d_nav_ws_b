@@ -5,25 +5,17 @@
 #include <thread>
 #include <fstream>
 #include <csignal>
-#include <ros/ros.h>
 #include <so3_math.h>
 #include <Eigen/Eigen>
 #include <common_lib.h>
-#include <pcl/common/io.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <condition_variable>
-#include <nav_msgs/Odometry.h>
-#include <pcl/common/transforms.h>
-#include <pcl/kdtree/kdtree_flann.h>
-#include <tf/transform_broadcaster.h>
-#include <eigen_conversions/eigen_msg.h>
-#include <pcl_conversions/pcl_conversions.h>
-#include <sensor_msgs/Imu.h>
-#include <sensor_msgs/PointCloud2.h>
-#include <geometry_msgs/Vector3.h>
 #include "use-ikfom.hpp"
-#include "preprocess.h"
+#include "fast_lio_compat.h"  // g1d: ROS-free IMU message / logging
+
+// g1d: from preprocess.h (which depends on ROS/Livox messages and is not compiled here).
+enum LID_TYPE{AVIA = 1, VELO16, OUST64, MARSIM};
 
 /// *************Preconfiguration
 
@@ -373,7 +365,7 @@ void ImuProcess::Process(const MeasureGroup &meas,  esekfom::esekf<state_ikfom, 
       ROS_INFO("IMU Initial Done");
       // ROS_INFO("IMU Initial Done: Gravity: %.4f %.4f %.4f %.4f; state.bias_g: %.4f %.4f %.4f; acc covarience: %.8f %.8f %.8f; gry covarience: %.8f %.8f %.8f",\
       //          imu_state.grav[0], imu_state.grav[1], imu_state.grav[2], mean_acc.norm(), cov_bias_gyr[0], cov_bias_gyr[1], cov_bias_gyr[2], cov_acc[0], cov_acc[1], cov_acc[2], cov_gyr[0], cov_gyr[1], cov_gyr[2]);
-      fout_imu.open(DEBUG_FILE_DIR("imu.txt"),ios::out);
+      // g1d: no debug file output (fout_imu was never written to).
     }
 
     return;

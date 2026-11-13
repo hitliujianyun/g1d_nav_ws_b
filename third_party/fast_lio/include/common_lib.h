@@ -3,13 +3,10 @@
 
 #include <so3_math.h>
 #include <Eigen/Eigen>
+#include <deque>
 #include <pcl/point_types.h>
 #include <pcl/point_cloud.h>
-#include <fast_lio/Pose6D.h>
-#include <sensor_msgs/Imu.h>
-#include <nav_msgs/Odometry.h>
-#include <tf/transform_broadcaster.h>
-#include <eigen_conversions/eigen_msg.h>
+#include "fast_lio_compat.h"  // g1d: replaces fast_lio/Pose6D.h and the ROS message headers
 
 using namespace std;
 using namespace Eigen;

@@ -39,7 +39,7 @@
 #include <vector>
 #include <cstdlib>
 
-#include <boost/bind.hpp>
+// g1d: boost/bind.hpp was included but never used.
 #include <Eigen/Core>
 #include <Eigen/Geometry>
 #include <Eigen/Dense>
