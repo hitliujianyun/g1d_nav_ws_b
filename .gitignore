@@ -1,0 +1,26 @@
+# build outputs
+/build*/
+/install/
+/out/
+CMakeUserPresets.json
+
+# upstream reference clones (not part of the project; see third_party/*/UPSTREAM.md)
+/_upstream/
+
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.venv/
+
+# runtime artifacts
+/logs/
+*.mcap
+*.pcap
+/test_output/
+
+# editors
+.vscode/
+.idea/
+*.swp
