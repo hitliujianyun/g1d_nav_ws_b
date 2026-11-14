@@ -1,134 +1,94 @@
-# g1d_ws：G1-D 头部 Mid-360S 激光里程计 + 避障导航（不依赖 ROS）
+# g1d_ws：G1-D 激光里程计 + 避障导航（不依赖 ROS）
 
-设计文档：`../design/G1D_LIO_MPPI_Nav_Plan.md`。开发计划、TODO 和进度：[`PLAN.md`](PLAN.md)。
+让宇树 G1-D 轮式人形机器人用**头部的 Livox Mid-360S** 做激光里程计和三维避障，并通过 `rt/cmd_vel_no_limit` 控制底盘完成导航。整个系统只依赖宇树 SDK2（CycloneDDS），机器人上不安装 ROS。
 
-## 1. 组成
+- **定位**：FAST-LIO2（去 ROS / PCL 改造）+ 底盘轮速融合，按身体关节（升降、腰部）实时计算雷达位姿。
+- **避障**：Nav2 Costmap2D 体素层（能看到桌沿等悬空障碍）+ 底盘单线雷达层 + 膨胀；NavFn 全局规划 + Nav2 MPPI 局部控制。
+- **安全**：独立的 `g1d_base_guard` 是底盘指令的唯一写入者，负责限速、看门狗、近距离反射停车、急停和遥控接管。
+- **接入 NavGPT**：发相对航点 `(dx, dy, dyaw)` 和图像时刻，`g1d_nav` 自动补偿推理延迟；失败时返回原因和可通行方向。
+- **Web 调试台**：浏览器里看点云、地图、代价地图、路径，点选导航、多航点任务、遥控、急停、验收测试、在线调参、导出地图。
 
 ```
-Mid-360S ──UDP──▶ g1d_lio (C++) ──rt/nav/lio_odom, registered_cloud, lio_health──┐
-                                                                                 ▼
-slamware odom / hispeed / lowstate / waistpitch ──────────────▶ g1d_nav (C++)  ◀── rt/nav/goal (NavGPT / nav_cli)
-g1d_base_guard ──rt/nav/chassis_scan (底盘雷达转点云)──────────▶   FK + 状态估计 + 体素/扫描代价地图
-                                                                  + NavFn + MPPI + 状态机
-                                                                     │ rt/nav/cmd_vel, status, obstacle_points
-                                                                     ▼
-slamware scan, wirelesscontroller, HTTP 事件 ──▶ g1d_base_guard (Python) ──▶ rt/cmd_vel_no_limit（唯一写入者）
+Mid-360S ─▶ g1d_lio (FAST-LIO2) ─▶ g1d_nav (代价地图 + NavFn + MPPI + 状态机) ─▶ g1d_base_guard ─▶ rt/cmd_vel_no_limit
+                                       ▲ rt/nav/goal                     ▲ 底盘雷达 / 急停 / 遥控
+                              NavGPT / Web 调试台 / nav_cli ──────────────┘
 ```
 
-| 进程 | 语言 | 内容 |
-|---|---|---|
-| `g1d_lio` | C++17 | Livox-SDK2 直连 Mid-360S（或订阅 `rt/utlidar/*`）→ 帧聚合 + 自身点过滤 → FAST-LIO2（去 ROS / PCL）→ DDS |
-| `g1d_nav` | C++17 | 身体 FK、LIO + 轮速融合、Nav2 Costmap2D（体素层保留悬空物 + 底盘扫描层 + 膨胀）、NavFn、Nav2 MPPI（Eigen 版）、目标状态机（navigate / rotate / simple / stop、延迟补偿、恢复行为、free_sectors） |
-| `g1d_base_guard` | Python | 限幅、加速度限制、看门狗、扫掠路径反射层、旋转圆保护、急停锁存（话题 / 底盘 HTTP 事件）、遥控接管、零速保持后释放底盘 |
-| `NavClient` / `tools/` | Python | 目标下发与等待、接口探测、`cmd_vel_no_limit` 行为实测、录制、外参标定 |
-| `g1d_web` | Python + three.js | 浏览器调试台（`http://<PC2>:8080`）：点云 / 建图 / 代价地图 / 路径可视化，点选导航、多航点任务、Web 遥控、急停、T1–T6 验收向导、在线调参、地图导出（见 [`docs/WEB_UI.md`](docs/WEB_UI.md)） |
+## 文档
 
-## 2. 目录
-
-| 路径 | 说明 |
+| 文档 | 内容 |
 |---|---|
-| `src/common` `src/lio` `src/nav` | 算法核心（纯 C++，Windows / Linux 都能编译测试） |
-| `src/ros_shim` `src/pcl_lite` | 让 Nav2 / FAST-LIO 原码免 ROS / PCL 编译的最小垫片头文件 |
-| `src/apps` | `g1d_lio` / `g1d_nav` DDS 可执行程序（仅 Linux + unitree_sdk2） |
-| `src/sim` `src/tools` | 闭环仿真库；`g1d_sim_demo`（离线演示）、`g1d_fk`（身体链打印） |
-| `third_party/fast_lio` `third_party/nav2` | vendor 的上游代码（先原样提交再修改，改动见各自 `UPSTREAM.md` 与 git 历史） |
-| `third_party/<submodule>` | eigen 3.4.0、yaml-cpp、Livox-SDK2、unitree_sdk2、unitree_sdk2_python、boost_preprocessor |
-| `python/g1d_nav_py` | guard、NavClient、mock 机器人、`fake_nav`（无硬件模拟 lio + nav）、消息工具、标定算法；`python/tests` 为 pytest |
-| `python/g1d_web` | Web 调试台后端（标准库 HTTP / WebSocket、DDS hub、建图导出、任务、验收测试、参数）与 `static/` 前端 |
-| `tools/` | 现场工具脚本（见第 6 节） |
-| `config/` | `g1d_nav.yaml`（所有进程共用）、`mid360s_config.json`（Livox-SDK2） |
-| `deploy/` | `cyclonedds.xml`、`g1d.env`、systemd 单元、`run_all.sh`、`install.sh` |
-| `scripts/` | `build_host.ps1`（本机）、`build_robot.sh`（机器人 / Linux）、`pack_for_robot.ps1`（打包） |
+| [`docs/PROJECT_OVERVIEW.md`](docs/PROJECT_OVERVIEW.md) | 项目详细介绍：架构、各模块原理、话题与接口、安全设计、开源代码复用、测试结果 |
+| [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) | 移植到实机：环境准备、编译、分阶段上线、**需要设置 / 标定的参数**、参数参考、故障排查 |
+| [`docs/CALIBRATION.md`](docs/CALIBRATION.md) | 外参、身体链、自身点框、底盘行为的标定步骤 |
+| [`docs/WEB_UI.md`](docs/WEB_UI.md) | Web 调试台使用说明 |
+| [`PLAN.md`](PLAN.md) | 开发计划、TODO、进度日志 |
+| `../design/G1D_LIO_MPPI_Nav_Plan.md` | 原始设计方案 |
 
-## 3. 本机开发与验证（Windows）
+## 快速开始
 
-依赖：MinGW-w64 g++ ≥ 13、CMake ≥ 3.16、Ninja、Python 3.8+（`pip install numpy pyyaml pytest cyclonedds matplotlib`）。
+### 1. 开发机（Windows / Linux，无需硬件）
+
+依赖：g++ ≥ 9（Windows 用 MinGW-w64）、CMake ≥ 3.16、Ninja、Python 3.8+（`pip install numpy pyyaml pytest cyclonedds matplotlib`）。
+
+```bash
+git submodule update --init --recursive
+# Windows：编译 + 全部测试 + 离线导航演示（结果图在 logs/sim_*.png）
+powershell -ExecutionPolicy Bypass -File scripts\build_host.ps1 -Demo
+# 无硬件体验 Web 调试台（模拟雷达 / 导航 / 底盘，guard 为真实进程）
+python tools/sim_stack.py          # 浏览器打开 http://localhost:8080
+```
+
+### 2. 机器人（G1-D PC2：Jetson Orin NX，Ubuntu 20.04）
 
 ```powershell
-git submodule update --init --recursive
-powershell -ExecutionPolicy Bypass -File scripts\build_host.ps1 -Demo
+# 开发机：打包（含子模块，LF 换行，保留符号链接）
+powershell -ExecutionPolicy Bypass -File scripts\pack_for_robot.ps1
 ```
-
-会做：编译全部 C++ 核心 → `ctest`（5 个测试程序）→ `pytest`（50 个用例，含真实 CycloneDDS 回环端到端和 Web 端到端）→ 运行 4 个离线闭环场景并画图到 `logs/sim_*.png`。
-
-无硬件演示 Web 调试台：`python tools/sim_stack.py`，浏览器打开 `http://localhost:8080`（模拟 lio + nav + 底盘，guard 为真实进程）。
-
-本机验证覆盖范围：
-
-| 内容 | 结果（当前提交） |
-|---|---|
-| FAST-LIO2 合成 Mid-360（5000 点/帧、IMU 200 Hz，6.9 m 椭圆轨迹） | 最大位置误差 0.05 m，偏航误差 < 0.1°，单帧 7 ms |
-| 导航闭环 8 个场景（绕箱、桌面悬空、房间连续航点 + 延迟补偿、目标在障碍内、原地转、simple 通/堵、LIO 丢失、死路） | 全部无碰撞（整机高度 0–1.75 m 检测），状态 / 原因符合预期 |
-| guard 逻辑 17 个单测（含 Web 遥控 deadman、参数校验）+ DDS 回环（mock 底盘 ↔ guard ↔ 模拟 nav） | 0.3 m/s 驶向墙，停在 0.46 m（T1 要求 ≥ 0.40 m）；超时释放、原地转、后退、话题急停、HTTP 碰撞事件锁存均通过 |
-| C++ DDS 程序 | 本机不能链接 unitree_sdk2（只有 Linux 库），已用 `-fsyntax-only` 对 SDK 头文件做语法检查；真正编译在机器人上完成 |
-| Web 调试台 | WebSocket 客户端端到端：点选导航绕障到达、两航点任务、参数热更新与写回、地图导出下载、Web 遥控、只读页面急停；浏览器实测：3D / 俯视显示、点选导航、任务、T1（停车净距 0.44 m）、摇杆遥控、参数、诊断 |
-
-## 4. 移植到机器人（Jetson Orin NX，Ubuntu 20.04，aarch64）
-
-1. **打包**（本机）：`powershell -ExecutionPolicy Bypass -File scripts\pack_for_robot.ps1`
-   生成 `dist/g1d_ws-<commit>.tar.gz`。打包基于 `git archive`，换行为 LF，SDK 里的 `.so.0` 符号链接保持为链接（直接拷贝 Windows 工作区会丢失这两点）。
-2. **拷贝并编译**（机器人 PC2，`192.168.123.164`）：
-   ```bash
-   scp dist/g1d_ws-<commit>.tar.gz unitree@192.168.123.164:~
-   tar xzf g1d_ws-<commit>.tar.gz && sudo mv g1d_ws /opt/ && sudo chown -R unitree /opt/g1d_ws
-   /opt/g1d_ws/scripts/build_robot.sh            # 首次联网可加 --deps
-   ```
-   脚本会：检查子模块 → 修复 CycloneDDS 符号链接 → `cmake -DG1D_WITH_UNITREE=ON -DG1D_WITH_LIVOX=ON`（Orin 上自动加 `-mcpu=cortex-a78ae`）→ 安装到 `/opt/g1d_ws/install`（`bin/g1d_lio`、`bin/g1d_nav`、`bin/g1d_fk`、`lib/g1d/libddsc*.so.0`，RPATH 已设置）→ 运行 ctest / pytest。
-   - CMake 3.16（20.04 自带）即可；gcc 9.4 按 C++17 编译。
-3. **Python 依赖**：`python3 -m pip install --user numpy pyyaml pytest`；`unitree_sdk2_python` 按其 README 安装（需要 CycloneDDS 0.10.2 的 C 库并设置 `CYCLONEDDS_HOME`，然后 `pip3 install -e third_party/unitree_sdk2_python`）。不安装也可以，`deploy/g1d.env` 已把源码目录加入 `PYTHONPATH`，但 `cyclonedds==0.10.2` 的 Python 包必须可用。
-4. **Mid-360S 数据源**：先运行 `tools/check_interfaces.py`。
-   - 若 `rt/utlidar/cloud_livox_mid360` 有数据，说明宇树自带服务已占用雷达：设 `lidar.source: unitree_topic`（此时不要再用 SDK 直连，否则端口冲突）。
-   - 否则用 `lidar.source: livox_sdk2`，确认 `config/mid360s_config.json` 的 `host_ip` 是 PC2 的地址。
-
-## 5. 运行
 
 ```bash
-cd /opt/g1d_ws
-deploy/run_all.sh --guard-only      # 第 1 阶段：只开 guard（底盘雷达反射层），用 nav_cli simple 测试
-deploy/run_all.sh                   # guard → web → lio（静止 2 s）→ nav
-# 或 systemd：
-sudo deploy/install.sh --enable && sudo systemctl start g1d-guard g1d-web g1d-lio g1d-nav
+# 机器人 PC2
+tar xzf g1d_ws-<commit>.tar.gz && sudo mv g1d_ws /opt/
+/opt/g1d_ws/scripts/build_robot.sh                # 编译、安装、自测
+cd /opt/g1d_ws && deploy/run_all.sh               # 启动 guard → web → lio（静止 2 s）→ nav
 ```
 
-调试、可视化和整套导航操作都可以在浏览器里完成：`http://192.168.123.164:8080`（见 [`docs/WEB_UI.md`](docs/WEB_UI.md)）。命令行发目标：
+首次上机前必须完成接口确认和标定，按 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) 分阶段进行。
+
+## 使用
+
+**浏览器**：打开 `http://192.168.123.164:8080` → 「获取控制权」→ 在地图上点选目标（按下定位置、拖动定朝向），或在「任务」页编排多航点任务。空格键 = 急停。
+
+**命令行**：
 
 ```bash
-python3 tools/nav_cli.py goal 1.5 0.0 --yaw 0.0 --wait        # 相对当前 base_link
-python3 tools/nav_cli.py goal 3.0 1.0 --frame odom --wait     # 里程计系绝对坐标
-python3 tools/nav_cli.py rotate 1.57 --wait
-python3 tools/nav_cli.py stop ; python3 tools/nav_cli.py estop on|off
-python3 tools/nav_cli.py watch [--guard]
+python3 tools/nav_cli.py goal 1.5 0.0 --yaw 0.0 --wait      # 相对当前车体：前 1.5 m
+python3 tools/nav_cli.py goal 3.0 1.0 --frame odom --wait   # 里程计坐标系绝对目标
+python3 tools/nav_cli.py rotate 1.57 --wait                 # 原地转
+python3 tools/nav_cli.py stop                               # 取消
+python3 tools/nav_cli.py estop on|off                       # 急停 / 解除
+python3 tools/nav_cli.py watch                              # 实时状态
 ```
 
-NavGPT 侧（替换原来的"转到固定角度再直行"）：
+**NavGPT 接入**：
 
 ```python
 from g1d_nav_py.nav_client import NavClient
 from g1d_nav_py.navgpt_bridge import NavGptBridge
 
 bridge = NavGptBridge(NavClient(0, "eth0"), camera_latency_s=0.08, max_speed=0.35)
-result = bridge.step(lambda: navgpt3.infer(image, instruction), t_recv=frame_recv_time)  # (dx, dy, dyaw)
-prompt += bridge.feedback(result)        # FAILED 时带上 reason 与可通行方向
+result = bridge.step(lambda: navgpt3.infer(image, instruction), t_recv=frame_recv_time)  # 返回 (dx, dy, dyaw)
+prompt += bridge.feedback(result)   # 失败时附带原因和可通行方向，供下一轮推理
 ```
 
-`dx, dy, dyaw` 是图像时刻 `base_link` 下的相对航点（x 前、y 左、逆时针为正），`g1d_nav` 用位姿历史补偿推理延迟。底层接口 `NavClient.send_goal / rotate / stop / wait` 与 JSON 格式见设计文档 7.2 / 7.3 节。
+## 目录
 
-## 6. 现场工具与上线顺序（设计文档第 15 节）
-
-| 步骤 | 命令 | 产出 / 通过标准 |
-|---|---|---|
-| P0 接口确认 | `python3 tools/check_interfaces.py` | `logs/interfaces.json`：各话题频率、SLAMWARE 时间戳偏差（约 181 s）、`rt/cmd_vel_no_limit` 已有写入者、底盘 HTTP |
-| P0 底盘行为 | 停掉 guard，`python3 tools/cmd_vel_probe.py --i-know-it-moves` | 停发后多久停车、是否截断速度、零速是否锁住 → 填 `guard.zero_hold` 等 |
-| 外参 | `install/bin/g1d_fk` + `tools/calib_floor.py`（见 [`docs/CALIBRATION.md`](docs/CALIBRATION.md)） | `kinematics.head_to_livox`、`base_to_agv_z`、自身点框 |
-| P1 安全底线 | `run_all.sh --guard-only`，`guard.require_cloud: false` | T1：0.3 m/s 驶向墙 / 桌 / 人腿停车 ≥ 0.40 m；T2：杀进程 ≤ 0.6 s 停车 |
-| P2 LIO | `run_all.sh`，`nav_cli watch` | T3：10 m 矩形闭环误差 < 0.10 m / 2°；T4：原地 3 圈漂移 < 0.05 m |
-| P3–P4 导航 | `nav_cli goal ...` | T5：走廊绕障到达 ≥ 9/10；T6：桌面悬空物 10/10 不碰 |
-| 录制 | `python3 tools/record.py -o logs/run.jsonl.gz` | 话题 JSONL（点云 base64），用于离线复现 |
-
-## 7. 已知限制 / 待实测项
-
-- `rt/cmd_vel_no_limit` 的超时、限幅、锁轮行为未经实测（`guard.zero_hold` 暂定 1.0 s）。
-- `kinematics.head_to_livox`、`base_to_agv_z`、`lift_offset/scale`、自身点框、`nav_pose.arm_tuck` 都是估计值，必须按 `docs/CALIBRATION.md` 标定。
-- 底盘 HTTP 事件格式（`type` / `timestamp` 字段名）按文档假设，`EventTracker` 兼容 `timestamp` / `time` / `id`；AEB 开关接口的请求体未确认，guard 不主动调用。
-- 仿真中房间场景第二个航点离家具最近 0.09 m（整机轮廓），真机需用 T5 / T6 确认膨胀半径（`costmap.common.inflation.radius`）是否要加大。
-- 动态行人只通过体素层的射线清除处理，没有专门的预测。
+| 路径 | 内容 |
+|---|---|
+| `src/` | C++：`common` `lio` `nav`（算法核心）、`apps`（`g1d_lio` / `g1d_nav` 可执行程序）、`sim` `tools`、`ros_shim` `pcl_lite`（免 ROS / PCL 垫片） |
+| `python/` | `g1d_nav_py`（guard、NavClient、NavGPT 桥、mock 底盘、fake_nav）、`g1d_web`（Web 调试台）、`tests` |
+| `tools/` | 接口探测、底盘行为实测、录制、外参标定、命令行、本机仿真栈 |
+| `config/` | `g1d_nav.yaml`（所有进程共用参数）、`mid360s_config.json` |
+| `deploy/` `scripts/` | systemd 单元、启动脚本、CycloneDDS 配置；构建与打包脚本 |
+| `third_party/` | 修改过的上游代码（FAST-LIO2、Nav2 子集）与子模块（Eigen、yaml-cpp、Livox-SDK2、unitree_sdk2 等） |
+| `tests/` | C++ 单元测试与闭环仿真测试 |
