@@ -85,6 +85,7 @@ ManagerParams ManagerParams::fromYaml(const YAML::Node & root)
   p.recovery_clear_radius_m = get(root, "manager.recovery_clear_radius_m", p.recovery_clear_radius_m);
   p.recovery_rotate_rad = get(root, "manager.recovery_rotate_rad", p.recovery_rotate_rad);
   p.require_lio = get(root, "manager.require_lio", p.require_lio);
+  p.max_speed = get(root, "manager.max_speed", p.max_speed);
   return p;
 }
 
@@ -114,6 +115,7 @@ NavCore::NavCore(const NavConfig & cfg)
   local_ = std::make_unique<costmap::LayeredCostmap>(cfg.local);
   global_ = std::make_unique<costmap::LayeredCostmap>(cfg.global);
   controller_ = std::make_unique<MppiController>(local_->costmapRos(), cfg.controller);
+  default_max_speed_ = std::min(cfg.manager.max_speed, controller_->maxVx());
 }
 
 void NavCore::onLio(const LioInput & in)

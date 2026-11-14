@@ -59,6 +59,7 @@ struct ManagerParams
   double recovery_clear_radius_m{1.5};
   double recovery_rotate_rad{0.52};
   bool require_lio{true};
+  double max_speed{0.0};           // default goal speed cap (m/s), 0 = mppi.vx_max
 
   static ManagerParams fromYaml(const YAML::Node & root);
 };
