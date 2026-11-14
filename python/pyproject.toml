@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "g1d_nav_py"
+version = "0.1.0"
+description = "G1-D navigation: base guard (sole rt/cmd_vel_no_limit writer), NavClient, mock robot"
+requires-python = ">=3.8"
+dependencies = ["numpy>=1.17", "PyYAML>=5.3"]
+# unitree_sdk2py (+ cyclonedds==0.10.2 on the robot) is installed from third_party/unitree_sdk2_python.
+
+[project.optional-dependencies]
+dev = ["pytest>=6"]
+plot = ["matplotlib"]
+
+[project.scripts]
+g1d-base-guard = "g1d_nav_py.guard_node:main"
+g1d-mock-robot = "g1d_nav_py.mock_robot:main"
+
+[tool.setuptools]
+packages = ["g1d_nav_py"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

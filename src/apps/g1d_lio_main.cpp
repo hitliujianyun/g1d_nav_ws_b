@@ -1,4 +1,5 @@
-// g1d_lio: Mid-360S -> FAST-LIO2 -> rt/nav/lio_odom, rt/nav/registered_cloud, rt/nav/lio_health.
+// g1d_lio: Mid-360S -> FAST-LIO2 -> rt/nav/lio_odom, rt/nav/registered_cloud, rt/nav/lio_health
+//          (+ rt/nav/livox_cloud in the LiDAR frame when debug.publish_lidar_cloud is set).
 //
 // lidar.source = livox_sdk2   : direct Livox-SDK2 connection (build with G1D_WITH_LIVOX=ON)
 // lidar.source = unitree_topic: rt/utlidar/cloud_livox_mid360 + rt/utlidar/imu_livox_mid360
@@ -93,6 +94,23 @@ int main(int argc, char ** argv)
   auto cloud_pub = bus::advertise<bus::PointCloud2>("rt/nav/registered_cloud");
   auto health_pub = bus::advertise<bus::String>("rt/nav/lio_health");
 
+  // Optional raw LiDAR-frame cloud for calibration (tools/calib_floor.py), decimated, <= 5 Hz.
+  const bool publish_lidar_cloud = get(cfg, "debug.publish_lidar_cloud", false);
+  std::shared_ptr<bus::Publisher<bus::PointCloud2>> lidar_cloud_pub;
+  if (publish_lidar_cloud) {lidar_cloud_pub = bus::advertise<bus::PointCloud2>("rt/nav/livox_cloud");}
+  std::atomic<double> last_lidar_cloud{0.0};
+  auto maybe_publish_lidar = [&](const lio::LidarFrame & f) {
+      if (!lidar_cloud_pub || monoSec() - last_lidar_cloud < 0.2) {return;}
+      last_lidar_cloud = monoSec();
+      const size_t stride = std::max<size_t>(1, f.points.size() / 20000);
+      std::vector<Eigen::Vector3f> pts;
+      pts.reserve(f.points.size() / stride + 1);
+      for (size_t i = 0; i < f.points.size(); i += stride) {
+        pts.emplace_back(f.points[i].x, f.points[i].y, f.points[i].z);
+      }
+      lidar_cloud_pub->Write(bus::makeCloudXYZ(pts, "livox", nowSec()));
+    };
+
   lio::LioEstimator est(lio::LioConfig::fromYaml(cfg));
   std::mutex agg_mutex;
   lio::FrameAggregator agg(frame_ms);
@@ -109,7 +127,10 @@ int main(int argc, char ** argv)
         std::lock_guard<std::mutex> lk(agg_mutex);
         agg.push(pkt, frames);
       }
-      for (const auto & f : frames) {est.pushFrame(f);}
+      for (const auto & f : frames) {
+        maybe_publish_lidar(f);
+        est.pushFrame(f);
+      }
       ++packets;
     };
 
@@ -132,7 +153,11 @@ int main(int argc, char ** argv)
     const std::string imu_topic = get(cfg, "lidar.unitree_imu_topic", std::string("rt/utlidar/imu_livox_mid360"));
     subs.push_back(bus::subscribe<bus::PointCloud2>(cloud_topic, [&](const bus::PointCloud2 & m) {
         lio::LidarFrame f;
-        if (cloudToFrame(m, f)) {est.pushFrame(f); ++packets;}
+        if (cloudToFrame(m, f)) {
+          maybe_publish_lidar(f);
+          est.pushFrame(f);
+          ++packets;
+        }
       }, 4));
     subs.push_back(bus::subscribe<::sensor_msgs::msg::dds_::Imu_>(imu_topic,
       [&](const ::sensor_msgs::msg::dds_::Imu_ & m) {

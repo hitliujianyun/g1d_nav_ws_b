@@ -25,6 +25,7 @@ kinematics:
 lidar:
   source: livox_sdk2               # livox_sdk2 | unitree_topic
   sdk_config: config/mid360s_config.json
+  host_ip: 192.168.123.164         # PC2 address the Mid-360S streams to
   frame_ms: 100
   unitree_cloud_topic: rt/utlidar/cloud_livox_mid360
   unitree_imu_topic: rt/utlidar/imu_livox_mid360
@@ -189,7 +190,15 @@ guard:                             # g1d_base_guard (python) + obstacle points p
   rotate_radius: 0.38
   stop_m: 0.45
   slow_m: 1.20
+  creep_v: 0.05                    # slow-zone speed floor so the base reaches the stop line
   rear_clear_m: 0.50
   obstacle_points_range: 3.0
   obstacle_points_voxel: 0.05
   require_cloud: true              # false: guard runs on the chassis scan only (bring-up phase P1)
+  manual_deadzone: 0.15            # rt/wirelesscontroller stick deflection that means "manual"
+  manual_hold_s: 5.0               # guard stays silent this long after the last stick input
+  other_writers: refuse            # refuse | warn: another writer on rt/cmd_vel_no_limit at start-up
+
+debug:
+  publish_costmap: true            # rt/nav/local_costmap (OccupancyGrid_, 2 Hz)
+  publish_lidar_cloud: false       # rt/nav/livox_cloud (LiDAR frame, 5 Hz) for tools/calib_floor.py
