@@ -50,6 +50,9 @@ class GuardParams:
     path_step_m: float = 0.05
     manual_deadzone: float = 0.15
     manual_hold_s: float = 5.0
+    teleop_timeout: float = 0.3     # web teleop deadman: commands must arrive faster than this
+    teleop_vx_max: float = 0.30
+    teleop_wz_max: float = 0.50
 
     @classmethod
     def from_config(cls, cfg: Dict[str, Any]) -> "GuardParams":
@@ -59,6 +62,16 @@ class GuardParams:
             if f.name in g:
                 setattr(p, f.name, type(getattr(p, f.name))(g[f.name]))
         return p
+
+
+# Parameters that may change at runtime (rt/nav/param_set) with their allowed ranges.
+TUNABLE = {
+    "vx_max": (0.0, 1.0), "vx_min": (-0.3, 0.0), "wz_max": (0.0, 1.5),
+    "acc_v": (0.05, 3.0), "brake_v": (0.1, 5.0), "acc_w": (0.05, 5.0),
+    "stop_m": (0.1, 2.0), "slow_m": (0.2, 4.0), "creep_v": (0.0, 0.2), "rear_clear_m": (0.1, 2.0),
+    "rotate_radius": (0.2, 1.0), "zero_hold": (0.0, 5.0), "cmd_timeout": (0.1, 1.0),
+    "teleop_vx_max": (0.0, 0.6), "teleop_wz_max": (0.0, 1.0), "require_cloud": (0.0, 1.0),
+}
 
 
 @dataclass
@@ -136,6 +149,9 @@ class GuardCore:
         self.estop = False
         self.estop_reason = ""
         self.manual_until = -math.inf
+        self.teleop = (0.0, 0.0)
+        self.t_teleop = -math.inf
+        self.source = "none"            # nav | teleop | none (what the last target came from)
         self.blocked = ""
         self.front_clear = math.inf
         self.rear_clear = math.inf
@@ -180,9 +196,38 @@ class GuardCore:
         if max(abs(lx), abs(ly), abs(rx), abs(ry)) > self.p.manual_deadzone:
             self.manual_until = now + self.p.manual_hold_s
 
+    def on_teleop(self, v: float, w: float, now: float) -> None:
+        """Web teleop (rt/nav/teleop_cmd): overrides nav while fresh, same limits and reflexes."""
+        self.teleop = (float(v), float(w))
+        self.t_teleop = now
+
+    def set_param(self, name: str, value: Any) -> Optional[str]:
+        """Applies a runtime parameter; returns an error message or None."""
+        if name not in TUNABLE:
+            return f"unknown or read-only parameter '{name}'"
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return f"'{name}' needs a number"
+        lo, hi = TUNABLE[name]
+        if not (lo <= v <= hi) or math.isnan(v):
+            return f"'{name}' must be in [{lo}, {hi}]"
+        stop = v if name == "stop_m" else self.p.stop_m
+        slow = v if name == "slow_m" else self.p.slow_m
+        if slow <= stop:
+            return "slow_m must be greater than stop_m"
+        setattr(self.p, name, bool(v) if name == "require_cloud" else v)
+        return None
+
+    def params(self) -> Dict[str, Any]:
+        return {k: getattr(self.p, k) for k in TUNABLE}
+
     # ---- control ----------------------------------------------------------------------------
     def manual(self, now: float) -> bool:
         return now < self.manual_until
+
+    def teleop_active(self, now: float) -> bool:
+        return now - self.t_teleop < self.p.teleop_timeout
 
     def obstacles(self, now: float) -> Optional[np.ndarray]:
         """Fresh obstacle xy (base_link) outside the self box; None if a required source is stale."""
@@ -207,7 +252,17 @@ class GuardCore:
         p = self.p
         manual = self.manual(now)
         fresh_cmd = now - self.t_cmd < p.cmd_timeout
-        vt, wt = self.cmd if (fresh_cmd and not self.estop and not manual) else (0.0, 0.0)
+        if self.estop or manual:
+            vt, wt, self.source = 0.0, 0.0, "none"
+        elif self.teleop_active(now):
+            vt = min(max(self.teleop[0], -p.teleop_vx_max), p.teleop_vx_max)
+            wt = min(max(self.teleop[1], -p.teleop_wz_max), p.teleop_wz_max)
+            self.source = "teleop"
+        elif fresh_cmd:
+            vt, wt = self.cmd
+            self.source = "nav"
+        else:
+            vt, wt, self.source = 0.0, 0.0, "none"
         vt = min(max(vt, p.vx_min), p.vx_max)
         wt = min(max(wt, -p.wz_max), p.wz_max)
         self.last_target = (vt, wt)
@@ -279,7 +334,11 @@ class GuardCore:
             "v_target": round(self.last_target[0], 4), "w_target": round(self.last_target[1], 4),
             "blocked": self.blocked,
             "estop": self.estop, "estop_reason": self.estop_reason,
-            "manual": self.manual(now),
+            # g1d_nav cancels its goal while "manual" is true (remote stick or web teleop).
+            "manual": self.manual(now) or self.teleop_active(now),
+            "manual_source": ("remote" if self.manual(now) else
+                              "web" if self.teleop_active(now) else ""),
+            "source": self.source,
             "publishing": self.publishing,
             "front_clear": dist(self.front_clear), "rear_clear": dist(self.rear_clear),
             "rotate_ok": self.rotate_ok,

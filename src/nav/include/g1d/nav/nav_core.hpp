@@ -120,6 +120,12 @@ public:
   const MppiController & controller() const {return *controller_;}
   nlohmann::json statusJson(double now) const;
   std::map<int, bool> freeSectors(const Pose2D & pose) const;
+  /// Web / debug view: T_odom_lio, active goal, global + local path, MPPI optimal trajectory.
+  nlohmann::json debugJson(double now) const;
+
+  // ---- runtime parameters (rt/nav/param_set); see paramsJson() for the names
+  bool setParam(const std::string & name, double value, std::string * error = nullptr);
+  nlohmann::json paramsJson() const;
 
 private:
   void finish(NavStateId s, const std::string & reason, double now);
@@ -135,8 +141,11 @@ private:
   bool segmentFree(const Pose2D & from, double heading, double length) const;
   Twist2D stepRecovery(const NavState & st, double now);
   void beginRecovery(const NavState & st, double now, const std::string & why);
+  double effectiveSpeedLimit() const;
+  std::map<std::string, double *> tunables();
 
   NavConfig cfg_;
+  double default_max_speed_{0.0};  // 0 = MPPI vx_max
   BodyKinematics kin_;
   StateEstimator estimator_;
   std::unique_ptr<costmap::LayeredCostmap> local_;

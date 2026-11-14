@@ -172,3 +172,35 @@ TEST_CASE("dead end: no path to a goal behind a closed wall")
   CHECK(r.final_state == "FAILED");
   CHECK_FALSE(r.collided);
 }
+
+TEST_CASE("debug view and runtime parameters (web UI)")
+{
+  NavSimulation sim(emptyRoom(), projectConfig(), Pose2D(0, 0, 0));
+  sim.warmup(1.0);
+  std::string err;
+  CHECK_FALSE(sim.core().setParam("no_such_param", 1.0, &err));
+  CHECK(err.find("unknown") != std::string::npos);
+  CHECK_FALSE(sim.core().setParam("max_speed", 5.0, &err));
+  CHECK_FALSE(sim.core().setParam("approach_v_max", -1.0, &err));
+  REQUIRE(sim.core().setParam("max_speed", 0.2, &err));
+  REQUIRE(sim.core().setParam("approach_v_max", 0.15, &err));
+  const json params = sim.core().paramsJson();
+  CHECK(params["max_speed"].get<double>() == doctest::Approx(0.2));
+  CHECK(params["approach_v_max"].get<double>() == doctest::Approx(0.15));
+
+  sim.sendGoal({{"id", "p1"}, {"frame", "odom"}, {"x", 4.0}, {"y", 0.5}});
+  json mid;
+  const NavSimResult r = sim.runUntilDone(40.0, [&](NavSimulation & s) {
+        if (mid.is_null() && s.time() > 1004.0) {mid = s.core().debugJson(s.time());}
+      });
+  report("debug_params", r);
+  CHECK(r.final_state == "SUCCEEDED");
+  CHECK(r.max_speed <= 0.2 + 0.02);
+  REQUIRE_FALSE(mid.is_null());
+  CHECK(mid["T_odom_lio"]["valid"].get<bool>());
+  CHECK(mid["goal"]["x"].get<double>() == doctest::Approx(4.0));
+  CHECK(mid["global_path"].size() >= 2);
+  CHECK(mid["mppi_traj"].size() >= 5);
+  CHECK(mid["speed_limit"].get<double>() == doctest::Approx(0.2));
+  CHECK(sim.core().debugJson(sim.time())["global_path"].empty());
+}

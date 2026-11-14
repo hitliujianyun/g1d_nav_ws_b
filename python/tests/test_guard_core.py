@@ -190,6 +190,49 @@ def test_scan_to_points_frame_and_filtering():
     np.testing.assert_allclose(pts[1], [0.2, -0.1 - 2.0, 0.1], atol=1e-6)   # beam 3 at -90 deg
 
 
+def test_web_teleop_overrides_nav_with_deadman():
+    p = GuardParams()
+    g = fed(p)
+    outs, t = [], 0.0
+    while t < 2.0:
+        g.on_cmd(0.4, 0.0, t)              # nav keeps streaming
+        g.on_teleop(0.5, -0.2, t)          # web teleop above its own limits
+        g.t_scan = g.t_cloud = t
+        outs.append(g.step(t, DT))
+        t += DT
+    assert outs[-1].v == pytest.approx(p.teleop_vx_max)
+    assert outs[-1].w == pytest.approx(-0.2)
+    st = g.state(t)
+    assert st["manual"] and st["manual_source"] == "web" and st["source"] == "teleop"
+    # deadman: teleop stops -> nav command again after teleop_timeout
+    out = run(g, t, t + 1.5, cmd=(0.4, 0.0))[-1]
+    assert out.v == pytest.approx(0.4) and g.state(t + 1.5)["source"] == "nav"
+    assert not g.state(t + 1.5)["manual"]
+
+
+def test_teleop_still_gets_the_reflex_layer():
+    p = GuardParams()
+    g = fed(p, scan=wall_x(p.front_x + 0.3))
+    t = 0.0
+    while t < 1.0:
+        g.on_teleop(0.3, 0.0, t)
+        g.t_scan = g.t_cloud = t
+        out = g.step(t, DT)
+        t += DT
+    assert out.v == 0.0 and out.blocked == "front"
+
+
+def test_runtime_params_whitelist_and_validation():
+    g = fed()
+    assert g.set_param("stop_m", 0.5) is None and g.p.stop_m == 0.5
+    assert "unknown" in g.set_param("rate_hz", 10)
+    assert g.set_param("vx_max", 3.0) is not None
+    assert g.set_param("slow_m", 0.4) == "slow_m must be greater than stop_m"
+    assert g.set_param("require_cloud", 0) is None and g.p.require_cloud is False
+    assert g.set_param("wz_max", "fast") is not None
+    assert g.params()["stop_m"] == 0.5
+
+
 def test_state_json_is_serialisable():
     import json
     g = fed()

@@ -5,6 +5,8 @@
                                                      (PointCloud2_ x/y/z, base_link)
   rt/nav/obstacle_points (PointCloud2_, base_link) -> reflex
   rt/nav/estop (String_ "on" / "off"), rt/wirelesscontroller, chassis HTTP events -> latches
+  rt/nav/teleop_cmd (Twist_, web teleop deadman) -> overrides nav while fresh
+  rt/nav/param_set (String_ JSON {"target": "guard", "name", "value", "id"}) -> rt/nav/param_state
   rt/nav/guard_state (String_ JSON, 10 Hz), logs/guard-<time>.jsonl
 
     python -m g1d_nav_py.guard_node [--config config/g1d_nav.yaml] [--net-if eth0] [--domain 0]
@@ -37,6 +39,9 @@ T_OBSTACLES = "rt/nav/obstacle_points"
 T_ESTOP = "rt/nav/estop"
 T_JOY = "rt/wirelesscontroller"
 T_STATE = "rt/nav/guard_state"
+T_TELEOP = "rt/nav/teleop_cmd"
+T_PARAM_SET = "rt/nav/param_set"
+T_PARAM_STATE = "rt/nav/param_state"
 
 
 class BaseGuardNode:
@@ -81,10 +86,14 @@ class BaseGuardNode:
         self.relay_pub.Init()
         self.state_pub = ChannelPublisher(T_STATE, String_)
         self.state_pub.Init()
+        self.param_pub = ChannelPublisher(T_PARAM_STATE, String_)
+        self.param_pub.Init()
         for topic, typ, cb in ((T_CMD_IN, Twist_, self._on_cmd), (T_SCAN, LaserScan_, self._on_scan),
                                (T_OBSTACLES, PointCloud2_, self._on_cloud),
                                (T_ESTOP, String_, self._on_estop),
-                               (T_JOY, WirelessController_, self._on_joy)):
+                               (T_JOY, WirelessController_, self._on_joy),
+                               (T_TELEOP, Twist_, self._on_teleop),
+                               (T_PARAM_SET, String_, self._on_param)):
             s = ChannelSubscriber(topic, typ)
             s.Init(cb, 1)
             self._subs.append(s)
@@ -127,6 +136,28 @@ class BaseGuardNode:
         with self.lock:
             self.core.on_joystick(m.lx, m.ly, m.rx, m.ry, self.clock())
 
+    def _on_teleop(self, m) -> None:
+        with self.lock:
+            self.core.on_teleop(m.linear.x, m.angular.z, self.clock())
+
+    def _on_param(self, m) -> None:
+        req = msgs.parse_json(m)
+        if not req or req.get("target") != "guard":
+            return
+        with self.lock:
+            err = self.core.set_param(str(req.get("name")), req.get("value"))
+        if err is None:
+            log.info("param %s = %s", req.get("name"), req.get("value"))
+        self.publish_params({"id": req.get("id", ""), "name": req.get("name"), "ok": err is None,
+                             "error": err or ""})
+
+    def publish_params(self, ack: Optional[Dict[str, Any]] = None) -> None:
+        with self.lock:
+            msg = {"target": "guard", "params": self.core.params()}
+        if ack is not None:
+            msg["ack"] = ack
+        self.param_pub.Write(msgs.json_msg(msg))
+
     def _poll_events(self) -> None:
         while not self._stop.is_set():
             try:
@@ -165,6 +196,8 @@ class BaseGuardNode:
             k += 1
             if k % state_every == 0:
                 self.publish_state()
+            if k % max(1, int(self.p.rate_hz)) == 0:
+                self.publish_params()
             t_next += dt
             delay = t_next - self.clock()
             if delay > 0:

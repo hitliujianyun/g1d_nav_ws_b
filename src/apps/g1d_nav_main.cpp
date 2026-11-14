@@ -3,8 +3,10 @@
 // Subscribes: rt/nav/lio_odom, rt/nav/lio_health, rt/nav/registered_cloud, rt/nav/chassis_scan,
 //             rt/slamware_ros_sdk_server_node/odom, rt/hispeed_state, rt/lowstate,
 //             rt/waistpitchstate, rt/nav/goal, rt/nav/estop, rt/nav/guard_state
+//             rt/nav/param_set (JSON {"target": "nav", "name", "value", "id"})
 // Publishes:  rt/nav/cmd_vel, rt/nav/status, rt/nav/base_odom, rt/nav/obstacle_points,
-//             rt/nav/local_costmap (debug)
+//             rt/nav/param_state, debug: rt/nav/local_costmap, rt/nav/global_costmap,
+//             rt/nav/debug (JSON: T_odom_lio, goal, paths, MPPI trajectory)
 // The chassis LiDAR arrives as rt/nav/chassis_scan (PointCloud2 in base_link, republished by
 // g1d_base_guard) so that no LaserScan type support is needed in C++.
 
@@ -137,16 +139,45 @@ int main(int argc, char ** argv)
   subs.push_back(subscribe<bus::String>("rt/nav/goal", [&](const bus::String & m) {goal_box.put(m.data());}, 8));
   subs.push_back(subscribe<bus::String>("rt/nav/estop", [&](const bus::String & m) {estop_box.put(m.data());}, 8));
   subs.push_back(subscribe<bus::String>("rt/nav/guard_state", [&](const bus::String & m) {guard_box.put(m.data());}));
+  bus::Mailbox<std::string> param_box(16);
+  subs.push_back(subscribe<bus::String>("rt/nav/param_set", [&](const bus::String & m) {param_box.put(m.data());}, 16));
 
   auto cmd_pub = bus::advertise<::geometry_msgs::msg::dds_::Twist_>("rt/nav/cmd_vel");
   auto status_pub = bus::advertise<bus::String>("rt/nav/status");
   auto odom_pub = bus::advertise<bus::Odometry>("rt/nav/base_odom");
   auto obst_pub = bus::advertise<bus::PointCloud2>("rt/nav/obstacle_points");
   auto costmap_pub = bus::advertise<::nav_msgs::msg::dds_::OccupancyGrid_>("rt/nav/local_costmap");
+  auto global_costmap_pub = bus::advertise<::nav_msgs::msg::dds_::OccupancyGrid_>("rt/nav/global_costmap");
+  auto debug_pub = bus::advertise<bus::String>("rt/nav/debug");
+  auto param_pub = bus::advertise<bus::String>("rt/nav/param_state");
+  auto publishGrid = [](auto & pub, const costmap::LayeredCostmap & cm, double stamp) {
+      const auto g = cm.toOccupancyGrid();
+      ::nav_msgs::msg::dds_::OccupancyGrid_ m;
+      bus::setStamp(m.header().stamp(), stamp);
+      m.header().frame_id("odom");
+      m.info().resolution(g.info.resolution);
+      m.info().width(g.info.width);
+      m.info().height(g.info.height);
+      m.info().origin().position().x(g.info.origin.position.x);
+      m.info().origin().position().y(g.info.origin.position.y);
+      m.info().origin().orientation().w(1.0);
+      m.data().assign(g.data.begin(), g.data.end());
+      pub->Write(m);
+    };
+  auto publishParams = [&](const nlohmann::json & ack) {
+      nlohmann::json j;
+      j["target"] = "nav";
+      j["params"] = core.paramsJson();
+      if (!ack.is_null()) {j["ack"] = ack;}
+      param_pub->Write(bus::makeString(j.dump()));
+    };
 
   std::deque<LioOdomMsg> lio_hist;
   double last_obst_stamp = 0.0;
   double last_costmap_pub = 0.0;
+  double last_global_costmap_pub = 0.0;
+  double last_debug_pub = 0.0;
+  double last_param_pub = 0.0;
   Rate rate(nav_cfg.controller.controller_frequency);
   std::fprintf(stderr, "[g1d_nav] running (domain %d, if %s)\n", domain, net_if.c_str());
 
@@ -227,18 +258,34 @@ int main(int argc, char ** argv)
     }
     if (publish_costmap && now - last_costmap_pub > 0.5) {
       last_costmap_pub = now;
-      const auto g = core.localCostmap().toOccupancyGrid();
-      ::nav_msgs::msg::dds_::OccupancyGrid_ m;
-      bus::setStamp(m.header().stamp(), now);
-      m.header().frame_id("odom");
-      m.info().resolution(g.info.resolution);
-      m.info().width(g.info.width);
-      m.info().height(g.info.height);
-      m.info().origin().position().x(g.info.origin.position.x);
-      m.info().origin().position().y(g.info.origin.position.y);
-      m.info().origin().orientation().w(1.0);
-      m.data().assign(g.data.begin(), g.data.end());
-      costmap_pub->Write(m);
+      publishGrid(costmap_pub, core.localCostmap(), now);
+    }
+    if (publish_costmap && now - last_global_costmap_pub > 1.0) {
+      last_global_costmap_pub = now;
+      publishGrid(global_costmap_pub, core.globalCostmap(), now);
+    }
+    if (now - last_debug_pub > 0.2) {
+      last_debug_pub = now;
+      debug_pub->Write(bus::makeString(core.debugJson(now).dump()));
+    }
+    for (auto & ps : param_box.drain()) {
+      nlohmann::json ack;
+      try {
+        const auto j = nlohmann::json::parse(ps);
+        if (j.value("target", std::string()) != "nav") {continue;}
+        std::string err;
+        const bool ok = core.setParam(j.at("name").get<std::string>(), j.at("value").get<double>(), &err);
+        ack = {{"id", j.value("id", std::string())}, {"name", j.value("name", std::string())},
+          {"ok", ok}, {"error", err}};
+      } catch (const std::exception & e) {
+        ack = {{"ok", false}, {"error", e.what()}};
+      }
+      publishParams(ack);
+      last_param_pub = now;
+    }
+    if (now - last_param_pub > 1.0) {
+      last_param_pub = now;
+      publishParams(nullptr);
     }
     rate.sleep();
   }

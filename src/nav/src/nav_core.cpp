@@ -285,7 +285,7 @@ bool NavCore::startGoal(const NavState & st, double now)
     }
     controller_->reset();
     controller_->setPlan(path_);
-    controller_->setSpeedLimit(g.max_speed);
+    controller_->setSpeedLimit(effectiveSpeedLimit());
   } else {
     path_ = {st.pose, goal_};
   }
@@ -638,6 +638,102 @@ nlohmann::json NavCore::statusJson(double now) const
   j["recoveries"] = recoveries_;
   j["path_points"] = path_.size();
   j["stamp"] = now;
+  return j;
+}
+
+namespace
+{
+nlohmann::json posesXY(const std::vector<Pose2D> & poses, size_t max_points)
+{
+  nlohmann::json a = nlohmann::json::array();
+  if (poses.empty()) {return a;}
+  const size_t step = std::max<size_t>(1, poses.size() / max_points);
+  for (size_t i = 0; i < poses.size(); i += step) {a.push_back({poses[i].x, poses[i].y});}
+  if ((poses.size() - 1) % step != 0) {a.push_back({poses.back().x, poses.back().y});}
+  return a;
+}
+}  // namespace
+
+nlohmann::json NavCore::debugJson(double now) const
+{
+  nlohmann::json j;
+  j["stamp"] = now;
+  j["state"] = toString(state_);
+  const Eigen::Isometry3d T = estimator_.T_odom_lio();
+  const Eigen::Quaterniond q(T.linear());
+  j["T_odom_lio"] = {
+    {"valid", estimator_.initialized()},
+    {"t", {T.translation().x(), T.translation().y(), T.translation().z()}},
+    {"q", {q.x(), q.y(), q.z(), q.w()}}};
+  const bool active = isActive(state_);
+  if (goal_req_ && state_ != NavStateId::Idle) {
+    j["goal"] = {{"id", goal_req_->id}, {"mode", goal_req_->mode}, {"x", goal_.x}, {"y", goal_.y},
+      {"yaw", goal_.yaw}, {"use_yaw", goal_req_->use_yaw}, {"adjusted", goal_adjusted_},
+      {"xy_tolerance", goal_req_->xy_tolerance}};
+  } else {
+    j["goal"] = nullptr;
+  }
+  j["global_path"] = active ? posesXY(path_, 300) : nlohmann::json::array();
+  j["local_path"] = active ? posesXY(controller_->localPath(), 100) : nlohmann::json::array();
+  nlohmann::json traj = nlohmann::json::array();
+  const Eigen::ArrayXXf & o = controller_->optimalTrajectory();
+  if (active && o.cols() >= 2) {
+    for (Eigen::Index i = 0; i < o.rows(); i += 2) {traj.push_back({o(i, 0), o(i, 1)});}
+  }
+  j["mppi_traj"] = traj;
+  j["speed_limit"] = effectiveSpeedLimit();
+  return j;
+}
+
+double NavCore::effectiveSpeedLimit() const
+{
+  double v = default_max_speed_;
+  if (goal_req_ && goal_req_->max_speed > 0.0) {
+    v = v > 0.0 ? std::min(v, goal_req_->max_speed) : goal_req_->max_speed;
+  }
+  return v;
+}
+
+std::map<std::string, double *> NavCore::tunables()
+{
+  auto & m = cfg_.manager;
+  return {
+    {"approach_v_max", &m.approach_v_max}, {"simple_v_max", &m.simple_v_max},
+    {"final_rotation_wmax", &m.final_rotation_wmax}, {"final_rotation_kp", &m.final_rotation_kp},
+    {"progress_window_s", &m.progress_window_s}, {"progress_min_m", &m.progress_min_m},
+    {"recovery_wait_s", &m.recovery_wait_s}, {"recovery_clear_radius_m", &m.recovery_clear_radius_m},
+    {"recovery_rotate_rad", &m.recovery_rotate_rad}};
+}
+
+bool NavCore::setParam(const std::string & name, double value, std::string * error)
+{
+  auto fail = [&](const std::string & e) {
+      if (error) {*error = e;}
+      return false;
+    };
+  if (!std::isfinite(value) || value < 0.0) {return fail("value must be finite and >= 0");}
+  if (name == "max_speed") {
+    if (value > controller_->maxVx() + 1e-9) {
+      return fail("max_speed above mppi.vx_max (" + std::to_string(controller_->maxVx()) + ")");
+    }
+    default_max_speed_ = value;
+    if (isActive(state_)) {controller_->setSpeedLimit(effectiveSpeedLimit());}
+    return true;
+  }
+  auto t = tunables();
+  const auto it = t.find(name);
+  if (it == t.end()) {return fail("unknown parameter '" + name + "'");}
+  *it->second = value;
+  return true;
+}
+
+nlohmann::json NavCore::paramsJson() const
+{
+  nlohmann::json j;
+  for (const auto & kv : const_cast<NavCore *>(this)->tunables()) {j[kv.first] = *kv.second;}
+  j["max_speed"] = default_max_speed_;
+  j["mppi_vx_max"] = controller_->maxVx();
+  j["mppi_wz_max"] = controller_->maxWz();
   return j;
 }
 
