@@ -1,0 +1,20 @@
+[Unit]
+Description=g1d navigation (costmaps + NavFn + MPPI + goal state machine)
+After=g1d-lio.service g1d-guard.service
+Wants=g1d-lio.service g1d-guard.service
+
+[Service]
+Type=simple
+User=unitree
+EnvironmentFile=/opt/g1d_ws/deploy/g1d.env
+WorkingDirectory=/opt/g1d_ws
+ExecStart=/opt/g1d_ws/install/bin/g1d_nav ${G1D_CONFIG}
+Restart=on-failure
+RestartSec=2
+CPUAffinity=4 5
+Nice=-5
+KillSignal=SIGINT
+TimeoutStopSec=3
+
+[Install]
+WantedBy=multi-user.target

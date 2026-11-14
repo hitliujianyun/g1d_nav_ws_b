@@ -1,0 +1,21 @@
+[Unit]
+Description=g1d LIO (Mid-360S -> FAST-LIO2 -> rt/nav/lio_odom)
+After=network-online.target g1d-guard.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=unitree
+EnvironmentFile=/opt/g1d_ws/deploy/g1d.env
+WorkingDirectory=/opt/g1d_ws
+# The base must stand still for ~2 s after start (IMU initialisation).
+ExecStart=/opt/g1d_ws/install/bin/g1d_lio ${G1D_CONFIG}
+Restart=on-failure
+RestartSec=2
+CPUAffinity=2 3
+Nice=-5
+KillSignal=SIGINT
+TimeoutStopSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- export CYCLONEDDS_URI=file:///opt/g1d_ws/deploy/cyclonedds.xml (deploy/g1d.env does this).
+     The unitree SDKs pass the interface explicitly (ChannelFactory Init(domain, "eth0")); this file
+     pins the same interface for any other CycloneDDS user and raises the socket buffer for the
+     registered-cloud topic. -->
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain id="any">
+    <General>
+      <Interfaces>
+        <NetworkInterface name="eth0" priority="default" multicast="default"/>
+      </Interfaces>
+    </General>
+    <Internal>
+      <SocketReceiveBufferSize min="4MB"/>
+    </Internal>
+  </Domain>
+</CycloneDDS>

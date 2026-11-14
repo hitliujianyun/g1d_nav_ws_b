@@ -26,4 +26,12 @@ if(G1D_WITH_LIVOX)
   target_compile_definitions(g1d_lio PRIVATE G1D_HAVE_LIVOX)
 endif()
 
+# Runtime CycloneDDS libs: binaries load libddsc.so.0 / libddscxx.so.0 (the SONAMEs). In the SDK
+# those names are git symlinks, which break when the tree is copied from a Windows checkout, so
+# the real files are installed under their SONAMEs into a private dir (the SDK's own install rules
+# also write lib/, possibly with the broken links).
+set(G1D_DDS_LIB_DIR ${PROJECT_SOURCE_DIR}/third_party/unitree_sdk2/thirdparty/lib/${CMAKE_SYSTEM_PROCESSOR})
+set_target_properties(g1d_nav g1d_lio PROPERTIES INSTALL_RPATH "$ORIGIN/../lib/g1d")
+install(FILES ${G1D_DDS_LIB_DIR}/libddsc.so DESTINATION lib/g1d RENAME libddsc.so.0)
+install(FILES ${G1D_DDS_LIB_DIR}/libddscxx.so DESTINATION lib/g1d RENAME libddscxx.so.0)
 install(TARGETS g1d_nav g1d_lio RUNTIME DESTINATION bin)

@@ -1,0 +1,20 @@
+[Unit]
+Description=g1d base guard (sole writer of rt/cmd_vel_no_limit)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=unitree
+EnvironmentFile=/opt/g1d_ws/deploy/g1d.env
+WorkingDirectory=/opt/g1d_ws
+ExecStart=/usr/bin/python3 -m g1d_nav_py.guard_node --config ${G1D_CONFIG} --log-dir /opt/g1d_ws/logs
+Restart=always
+RestartSec=1
+CPUAffinity=6
+Nice=-5
+KillSignal=SIGINT
+TimeoutStopSec=3
+
+[Install]
+WantedBy=multi-user.target
