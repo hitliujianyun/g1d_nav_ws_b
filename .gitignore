@@ -16,6 +16,9 @@ __pycache__/
 
 # runtime artifacts
 /logs/
+/maps/
+/missions/
+config/*.bak-*
 *.mcap
 *.pcap
 /test_output/

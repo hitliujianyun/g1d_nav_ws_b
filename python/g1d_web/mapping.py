@@ -127,6 +127,14 @@ class MapBuilder:
             grid[cells(floor)] = 254
         if traj.shape[0]:
             grid[cells(traj)] = 254
+        # Sparse floor returns leave single unknown cells inside free space: one dilation pass.
+        free = grid == 254
+        grown = free.copy()
+        grown[1:, :] |= free[:-1, :]
+        grown[:-1, :] |= free[1:, :]
+        grown[:, 1:] |= free[:, :-1]
+        grown[:, :-1] |= free[:, 1:]
+        grid[grown] = 254
         occ = pts[(z >= z_min) & (z <= z_max)]
         if occ.shape[0]:
             grid[cells(occ)] = 0

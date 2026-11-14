@@ -556,6 +556,12 @@ class FakeNav:
                          "clock_offset": 0.0, "clock_jumps": 0}))
                     self.pubs["base_odom"].Write(msgs.make_odometry(wall, pose[0], pose[1], pose[2],
                                                                     self.vel[0], self.vel[1]))
+                    c, s = math.cos(pose[2]), math.sin(pose[2])
+                    imu_odom = np.array([pose[0] + c * LIDAR_XYZ[0], pose[1] + s * LIDAR_XYZ[0], LIDAR_XYZ[2]])
+                    imu_lio = (imu_odom - self.t_odom_lio) @ self.R_odom_lio
+                    self.pubs["lio_odom"].Write(msgs.make_odometry(
+                        wall, float(imu_lio[0]), float(imu_lio[1]), -pose[2], self.vel[0], self.vel[1],
+                        "odom_lio", "livox_imu"))
                 if k % 4 == 0:
                     self.pubs["debug"].Write(msgs.json_msg(self.debug(now)))
                 if k % 10 == 0:

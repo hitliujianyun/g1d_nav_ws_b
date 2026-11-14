@@ -75,6 +75,15 @@
 - [x] `scripts/build_host.ps1`、`scripts/build_robot.sh`（修复 SDK 符号链接、Orin 架构参数、安装 + RPATH、测试）、`scripts/pack_for_robot.ps1`
 - [x] README（构建、移植、运行、上线顺序、已知限制）、`docs/CALIBRATION.md`
 
+### M7 Web 调试台（设计：`docs/superpowers/specs/2026-11-14-web-debug-ui-design.md`，使用：`docs/WEB_UI.md`）
+- [x] g1d_nav：`rt/nav/debug`（T_odom_lio、目标、路径、MPPI 轨迹）、`rt/nav/global_costmap`、`param_set` / `param_state` 热更新（+ `manager.max_speed`）；C++ 测试
+- [x] guard：`rt/nav/teleop_cmd`（deadman、优先于导航、`manual_source: web`、仍过反射层）、参数白名单热更新；单测
+- [x] `g1d_web` 后端：标准库 HTTP + WebSocket、DDS hub、控制锁、体素建图与导出（PCD / PNG + YAML / CSV / costmap）、任务运行器、T1–T6 验收、YAML 写回
+- [x] 前端（原生 ES 模块 + 自带 three.js r160）：3D / 俯视视图与 13 个图层、导航 / 任务 / 遥控 / 建图 / 测试 / 参数 / 诊断 7 个标签页
+- [x] `fake_nav` + `tools/sim_stack.py`：本机无硬件全链路（模拟 lio + nav + 底盘，真实 guard + web）
+- [x] 测试：Web 单测 18 项 + Web 端到端 1 项（pytest 共 50 项）；浏览器实测导航、任务、T1、遥控、参数、导出
+- [x] 部署：`deploy/systemd/g1d-web.service`、`run_all.sh` 启动 web
+
 ## 4. 关键设计决策
 
 | 决策 | 原因 |
@@ -100,10 +109,12 @@
 | 2026-11-14 | M4 收尾：SDK 头文件语法检查发现 `dds` 命名空间冲突并修复；`g1d_fk`；`rt/nav/livox_cloud` |
 | 2026-11-14 | M5：guard（扫掠路径反射层 + 爬行速度下限，回环测试停在墙前 0.46 m）、NavClient、NavGPT 桥、mock 机器人、5 个现场工具、标定算法；pytest 28 项通过；多进程冒烟通过 |
 | 2026-11-14 | M6：部署文件、构建 / 打包脚本（CMake 3.16 兼容、符号链接 / LF / 可执行位检查）、README、标定文档；全量构建 + 测试通过 |
+| 2026-11-14 | M7：Web 调试台。需求确认：后端在 PC2、离线、笔记本浏览器、建图只做可视化 + 导出、6 类控制功能全部要。实现后端 / 前端 / fake_nav；浏览器实测：点选目标绕箱到达、3 航点任务 3/3、T1 停车净距 0.44 m、摇杆原地转、参数热更新、地图导出；修复：栅格导出空洞（膨胀一格）、fake_nav 未发 lio_odom |
 
 ## 6. 上机待办（本机无法完成）
 
 - [ ] 在 Jetson 上 `scripts/build_robot.sh`：首次真正编译链接 `g1d_lio` / `g1d_nav`（gcc 9.4）
 - [ ] P0：`check_interfaces.py`（确认 Mid-360S 数据源、SLAMWARE 话题、HTTP 事件格式）、`cmd_vel_probe.py`（`zero_hold`、限幅、锁轮）
 - [ ] 标定：`head_to_livox`、`base_to_agv_z`、升降比例、自身点框、导航姿态（`docs/CALIBRATION.md`）
-- [ ] 验收 T1–T6（README 第 6 节）；按结果调整 `guard.stop_m`、膨胀半径、MPPI 权重
+- [ ] 验收 T1–T6（README 第 6 节，或 Web「测试」页）；按结果调整 `guard.stop_m`、膨胀半径、MPPI 权重
+- [ ] Web 调试台接真机：确认 `rt/nav/debug` / 代价地图在真实 g1d_nav 下的显示，Jetson 上 g1d_web 的 CPU 占用（大地图时可调大 `web.map_voxel`）

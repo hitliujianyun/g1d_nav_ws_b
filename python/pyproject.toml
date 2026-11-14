@@ -17,9 +17,14 @@ plot = ["matplotlib"]
 [project.scripts]
 g1d-base-guard = "g1d_nav_py.guard_node:main"
 g1d-mock-robot = "g1d_nav_py.mock_robot:main"
+g1d-fake-nav = "g1d_nav_py.fake_nav:main"
+g1d-web = "g1d_web.__main__:main"
 
 [tool.setuptools]
-packages = ["g1d_nav_py"]
+packages = ["g1d_nav_py", "g1d_web"]
+
+[tool.setuptools.package-data]
+g1d_web = ["static/*.html", "static/css/*", "static/js/*", "static/vendor/three/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

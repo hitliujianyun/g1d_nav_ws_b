@@ -21,6 +21,7 @@ slamware scan, wirelesscontroller, HTTP 事件 ──▶ g1d_base_guard (Python)
 | `g1d_nav` | C++17 | 身体 FK、LIO + 轮速融合、Nav2 Costmap2D（体素层保留悬空物 + 底盘扫描层 + 膨胀）、NavFn、Nav2 MPPI（Eigen 版）、目标状态机（navigate / rotate / simple / stop、延迟补偿、恢复行为、free_sectors） |
 | `g1d_base_guard` | Python | 限幅、加速度限制、看门狗、扫掠路径反射层、旋转圆保护、急停锁存（话题 / 底盘 HTTP 事件）、遥控接管、零速保持后释放底盘 |
 | `NavClient` / `tools/` | Python | 目标下发与等待、接口探测、`cmd_vel_no_limit` 行为实测、录制、外参标定 |
+| `g1d_web` | Python + three.js | 浏览器调试台（`http://<PC2>:8080`）：点云 / 建图 / 代价地图 / 路径可视化，点选导航、多航点任务、Web 遥控、急停、T1–T6 验收向导、在线调参、地图导出（见 [`docs/WEB_UI.md`](docs/WEB_UI.md)） |
 
 ## 2. 目录
 
@@ -32,7 +33,8 @@ slamware scan, wirelesscontroller, HTTP 事件 ──▶ g1d_base_guard (Python)
 | `src/sim` `src/tools` | 闭环仿真库；`g1d_sim_demo`（离线演示）、`g1d_fk`（身体链打印） |
 | `third_party/fast_lio` `third_party/nav2` | vendor 的上游代码（先原样提交再修改，改动见各自 `UPSTREAM.md` 与 git 历史） |
 | `third_party/<submodule>` | eigen 3.4.0、yaml-cpp、Livox-SDK2、unitree_sdk2、unitree_sdk2_python、boost_preprocessor |
-| `python/g1d_nav_py` | guard、NavClient、mock 机器人、消息工具、标定算法；`python/tests` 为 pytest |
+| `python/g1d_nav_py` | guard、NavClient、mock 机器人、`fake_nav`（无硬件模拟 lio + nav）、消息工具、标定算法；`python/tests` 为 pytest |
+| `python/g1d_web` | Web 调试台后端（标准库 HTTP / WebSocket、DDS hub、建图导出、任务、验收测试、参数）与 `static/` 前端 |
 | `tools/` | 现场工具脚本（见第 6 节） |
 | `config/` | `g1d_nav.yaml`（所有进程共用）、`mid360s_config.json`（Livox-SDK2） |
 | `deploy/` | `cyclonedds.xml`、`g1d.env`、systemd 单元、`run_all.sh`、`install.sh` |
@@ -47,7 +49,9 @@ git submodule update --init --recursive
 powershell -ExecutionPolicy Bypass -File scripts\build_host.ps1 -Demo
 ```
 
-会做：编译全部 C++ 核心 → `ctest`（5 个测试程序）→ `pytest`（28 个用例，含真实 CycloneDDS 回环端到端）→ 运行 4 个离线闭环场景并画图到 `logs/sim_*.png`。
+会做：编译全部 C++ 核心 → `ctest`（5 个测试程序）→ `pytest`（50 个用例，含真实 CycloneDDS 回环端到端和 Web 端到端）→ 运行 4 个离线闭环场景并画图到 `logs/sim_*.png`。
+
+无硬件演示 Web 调试台：`python tools/sim_stack.py`，浏览器打开 `http://localhost:8080`（模拟 lio + nav + 底盘，guard 为真实进程）。
 
 本机验证覆盖范围：
 
@@ -55,8 +59,9 @@ powershell -ExecutionPolicy Bypass -File scripts\build_host.ps1 -Demo
 |---|---|
 | FAST-LIO2 合成 Mid-360（5000 点/帧、IMU 200 Hz，6.9 m 椭圆轨迹） | 最大位置误差 0.05 m，偏航误差 < 0.1°，单帧 7 ms |
 | 导航闭环 8 个场景（绕箱、桌面悬空、房间连续航点 + 延迟补偿、目标在障碍内、原地转、simple 通/堵、LIO 丢失、死路） | 全部无碰撞（整机高度 0–1.75 m 检测），状态 / 原因符合预期 |
-| guard 逻辑 14 个单测 + DDS 回环（mock 底盘 ↔ guard ↔ 模拟 nav） | 0.3 m/s 驶向墙，停在 0.46 m（T1 要求 ≥ 0.40 m）；超时释放、原地转、后退、话题急停、HTTP 碰撞事件锁存均通过 |
+| guard 逻辑 17 个单测（含 Web 遥控 deadman、参数校验）+ DDS 回环（mock 底盘 ↔ guard ↔ 模拟 nav） | 0.3 m/s 驶向墙，停在 0.46 m（T1 要求 ≥ 0.40 m）；超时释放、原地转、后退、话题急停、HTTP 碰撞事件锁存均通过 |
 | C++ DDS 程序 | 本机不能链接 unitree_sdk2（只有 Linux 库），已用 `-fsyntax-only` 对 SDK 头文件做语法检查；真正编译在机器人上完成 |
+| Web 调试台 | WebSocket 客户端端到端：点选导航绕障到达、两航点任务、参数热更新与写回、地图导出下载、Web 遥控、只读页面急停；浏览器实测：3D / 俯视显示、点选导航、任务、T1（停车净距 0.44 m）、摇杆遥控、参数、诊断 |
 
 ## 4. 移植到机器人（Jetson Orin NX，Ubuntu 20.04，aarch64）
 
@@ -80,12 +85,12 @@ powershell -ExecutionPolicy Bypass -File scripts\build_host.ps1 -Demo
 ```bash
 cd /opt/g1d_ws
 deploy/run_all.sh --guard-only      # 第 1 阶段：只开 guard（底盘雷达反射层），用 nav_cli simple 测试
-deploy/run_all.sh                   # guard → lio（静止 2 s）→ nav
+deploy/run_all.sh                   # guard → web → lio（静止 2 s）→ nav
 # 或 systemd：
-sudo deploy/install.sh --enable && sudo systemctl start g1d-guard g1d-lio g1d-nav
+sudo deploy/install.sh --enable && sudo systemctl start g1d-guard g1d-web g1d-lio g1d-nav
 ```
 
-发目标：
+调试、可视化和整套导航操作都可以在浏览器里完成：`http://192.168.123.164:8080`（见 [`docs/WEB_UI.md`](docs/WEB_UI.md)）。命令行发目标：
 
 ```bash
 python3 tools/nav_cli.py goal 1.5 0.0 --yaw 0.0 --wait        # 相对当前 base_link

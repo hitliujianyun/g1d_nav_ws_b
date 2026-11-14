@@ -10,6 +10,7 @@ install -m 644 "$ROOT"/deploy/systemd/g1d-*.service /etc/systemd/system/
 mkdir -p "$ROOT/logs"
 systemctl daemon-reload
 if [ "${1:-}" = "--enable" ]; then
-  systemctl enable g1d-guard.service g1d-lio.service g1d-nav.service
+  systemctl enable g1d-guard.service g1d-lio.service g1d-nav.service g1d-web.service
 fi
-echo "installed: systemctl start g1d-guard g1d-lio g1d-nav ; journalctl -fu g1d-nav"
+echo "installed: systemctl start g1d-guard g1d-web g1d-lio g1d-nav ; journalctl -fu g1d-nav"
+echo "web UI: http://<robot-ip>:8080"
