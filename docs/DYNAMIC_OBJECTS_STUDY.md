@@ -195,6 +195,26 @@ Web 地图导出：关键帧（点云 + 位姿）─▶ DUFOMap 离线清理 ─
 
 **说明**：Thor 搭配的软件栈是 Ubuntu 24.04 + ROS 2 Jazzy（Nav2 含 MPPI），与正在规划的 ROS 2 版本工程天然一致；上述各层在 ROS 2 版本中可以直接实现为独立节点。
 
+### 6.7 "5090 远端推理 + 无线下发给 PC2"架构与 SAM 系列评估
+
+**"SAM3D"指代不一，三者结论不同**：
+
+| 模型 | 实际功能 | 速度 | 能否用于动态物体滤除 |
+|---|---|---|---|
+| Meta **SAM 3D Objects / Body**（2025-11） | 从**单张图像**重建物体三维模型 / 人体网格 | Objects 在 A100 上每个物体 10–20 s，显存 ≥ 24–32 GB [42][43]；Body 原版每张图数秒，加速版在 5090 上 65 ms [44] | **不适合**：输出是重建的形状，不判断运动，也不对激光点做标签；单目重建的尺度与位置也无法和 Mid-360S 点云精确对齐 |
+| **SAM3D**（Pointcept，ICCVW 2023） | 把 SAM 的 2D 掩码通过深度投影到点云，再逐帧合并 | 每帧 SAM 1369 ms + 合并 1518 ms [45] | **不适合**：离线、需要 RGB-D、无类别语义（分不出"人"） |
+| Meta **SAM 3 / 3.1**（2025-11 / 2026-03） | 文本提示的概念分割与视频跟踪（如提示 "person"） | H200 上单张图（100+ 目标）30 ms；视频跟踪在约 5 个目标时接近实时 [46]；SAM 3.1 在 H100 上把多目标视频吞吐从 16 提高到 32 FPS [47] | **可用，但只适合做辅助语义**：在 5090 上分割"人 / 推车"等，掩码回传给 PC2，投影到激光点 |
+
+**无线远端推理的约束**：
+
+- 带宽：只需上传相机图像（JPEG），回传压缩掩码（几 KB）；Mid-360S 点云（200,000 点 / s [48]，约 3 MB/s）留在 PC2 本地投影，不必上传。
+- 延迟和抖动：Wi-Fi 延迟分布有长尾；ROS 2 实测中网络过载时传输延迟可达 500 ms 且会丢消息 [49]。所以远端结果**一定会晚到、偶尔不到**。
+- 由此推出的原则：
+  1. 远端结果**不能进入避障安全回路**。guard、M-detector、体素层必须全部在本地运行，断网时系统照常工作。
+  2. 远端语义只用于对时延不敏感的环节：按图像时间戳匹配缓存的激光帧，用来**判定哪些点不入库**（对 ikd-Tree 中已入库的点可用 ikd-Tree 的区域删除回溯清除），以及生成训练伪标签。
+  3. 掩码回传时带上 PC2 的原始采集时间戳，在 PC2 上按时间戳关联，避免依赖两台机器的时钟同步。
+- 更推荐的用法是"**大模型在 5090 当老师，小模型在 PC2 本地跑**"：用 SAM 3 为自录的 G1-D 头部相机数据生成"人 / 可移动物体"掩码，蒸馏微调 YOLO11-seg 或 YOLO26-seg，部署在 PC2 自身的 GPU 上（Orin NX 16GB 上 YOLO11n 检测实测 256 FPS [39]，分割版本需实测），彻底去掉无线链路依赖。
+
 ## 7. 参考资料
 
 1. Wu et al., *Moving event detection from LiDAR point streams*, Nature Communications 2024 — https://www.nature.com/articles/s41467-023-44554-8
@@ -238,3 +258,11 @@ Web 地图导出：关键帧（点云 + 位姿）─▶ DUFOMap 离线清理 ─
 39. EdgeAIStack：YOLO11n on Jetson Thor T5000（引用 Ultralytics 实测数据）— https://edgeaistack.ai/benchmarks/jetson-thor-t5000/yolo11/n/
 40. EdgeAIStack：YOLO11s-seg on Jetson Thor T5000（推算值）— https://edgeaistack.ai/benchmarks/jetson-thor-t5000/yolo11-seg/s/
 41. ZETIC：Sonata (PTv3) on Jetson AGX Thor（第三方优化，端到端 31 ms）— https://zetic.ai/demos/sonata/ ；Sonata：https://github.com/facebookresearch/sonata
+42. facebookresearch/sam-3d-objects — https://github.com/facebookresearch/sam-3d-objects ；性能说明（DeepWiki）：https://deepwiki.com/facebookresearch/sam-3d-objects/10.3-performance-optimization
+43. sam-3d-objects Issue #6（显存需求）— https://github.com/facebookresearch/sam-3d-objects/issues/6
+44. *Fast SAM 3D Body* — https://arxiv.org/abs/2603.15603 ；SAM 3D Body：https://github.com/facebookresearch/sam-3d-body
+45. *EmbodiedSAM*（含 SAM3D 运行时间对比）— https://arxiv.org/abs/2408.11811 ；SAM3D：https://arxiv.org/abs/2306.03908
+46. *SAM 3: Segment Anything with Concepts* — https://arxiv.org/abs/2511.16719
+47. Meta AI 博客：SAM 3.1 — https://ai.meta.com/blog/segment-anything-model-3/
+48. Livox Mid-360 规格 — https://www.livoxtech.com/mid-360/specs
+49. *Analyze, Debug, Optimize: Real-Time Tracing for Perception and Mapping Systems in ROS 2*（Wi-Fi 过载时最高 500 ms 延迟）— https://arxiv.org/abs/2204.11778
