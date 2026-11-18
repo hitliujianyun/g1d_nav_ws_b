@@ -230,6 +230,34 @@ guard:                             # g1d_base_guard (python) + obstacle points p
   teleop_vx_max: 0.30
   teleop_wz_max: 0.50
 
+perception:                        # g1d_perception: head camera person masks + Mid-360S points
+  camera:
+    host: 192.168.123.164          # teleimager server (PC2)
+    zmq_port: 55555                # head_camera stream (teleimager_server.yaml)
+    crop: left                     # binocular frame [left | right]
+    latency_s: 0.06                # TBD: measure (stream has no capture timestamp)
+    size: [640, 480]
+    K: [380.0, 0.0, 320.0, 0.0, 380.0, 240.0, 0.0, 0.0, 1.0]   # TBD: calibrate (left camera)
+    dist: [0.0, 0.0, 0.0, 0.0, 0.0]                             # TBD: k1 k2 p1 p2 k3
+    head_to_camera: {xyz: [0.08, 0.03, 0.05], rpy: [0.0, 0.0, 0.0]}   # TBD: calibrate (x fwd, z up)
+  segmentation:
+    backend: yolo
+    model: models/person_seg.engine   # YOLO-seg distilled from SAM 3 labels, TensorRT on the Orin
+    conf: 0.4
+    imgsz: 640
+    half: true
+  association:
+    cloud_window_s: 0.25           # registered scans used around the image time
+    min_score: 0.4
+    min_mask_pixels: 400
+    depth_band: 0.6                # m behind the person's near surface still counted as person
+    min_points: 8
+    max_range: 8.0
+    box_margin: 0.15               # map deletion box margin (m)
+    delete_every_s: 0.5
+    confirm_hits: 2                # frames before a person may delete map points
+  record_every_s: 0.5              # --record: dataset frame spacing
+
 web:                               # g1d_web debug / control UI
   host: 0.0.0.0
   port: 8080

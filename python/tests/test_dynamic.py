@@ -113,6 +113,33 @@ def test_dufomap_cleaning_removes_trail_keeps_walls(tmp_path, isolate):
     assert keep[walls].mean() > 0.995
 
 
+@pytest.mark.skipif(not mapping.dufomap_available(), reason="dufomap not installed")
+def test_flow_frames_export_labels_every_scan(tmp_path):
+    from g1d_perception.tools.flow_frames import export
+    # Real Mid-360S density (~20k points / scan); at half density DUFOMap with d_p = 1 leaves
+    # most of the box "unknown" in individual scans.
+    d, _, _ = _record(tmp_path, frames=20, n=20000)
+    stats = export(d, str(tmp_path / "flow"))
+    files = sorted(os.listdir(tmp_path / "flow"))
+    assert stats["frames"] == 20 and len([f for f in files if f.endswith(".npz")]) == 20
+    z = np.load(tmp_path / "flow" / "000005.npz")
+    assert z["points"].shape[0] == z["dufo"].shape[0] == z["mdet"].shape[0]
+    np.testing.assert_allclose(z["pose"], np.eye(4))
+    # Over all scans: box positions vacated later are mostly dynamic (a slowly moving object
+    # overlaps its next positions, which DUFOMap keeps as hits), static structure never is.
+    box_lab, wall_lab = [], []
+    for k in range(20):
+        f = np.load(tmp_path / "flow" / f"{k:06d}.npz")
+        p, lab = f["points"], f["dufo"]
+        y_box = -2.0 + 0.15 * k
+        box = (np.abs(p[:, 0] - 2.5) < 0.05) & (p[:, 2] > -1.0) & (y_box < 0.3)
+        wall = (np.abs(np.abs(p[:, 0]) - 6.0) < 0.05) | (np.abs(np.abs(p[:, 1]) - 6.0) < 0.05)
+        box_lab.append(lab[box])
+        wall_lab.append(lab[wall])
+    assert np.concatenate(box_lab).mean() > 0.5
+    assert np.concatenate(wall_lab).mean() < 0.001
+
+
 def test_carving_fallback_removes_trail_keeps_walls(tmp_path):
     d, builder, _ = _record(tmp_path, frames=30, n=8000)
     pts = builder.points()
