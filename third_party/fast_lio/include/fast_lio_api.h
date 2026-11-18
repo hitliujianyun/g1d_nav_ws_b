@@ -5,6 +5,9 @@
 // The estimator keeps the upstream global state, so there is exactly one instance per process.
 // push_imu()/push_scan() may be called from sensor threads; process() from one worker thread.
 
+#include <array>
+#include <cstdint>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -64,10 +67,33 @@ struct Result
   double process_time_s{0.0};
   bool ekf_inited{false};
   Cloud::Ptr cloud_world;            // undistorted scan in the LIO world frame
+  std::vector<uint8_t> dynamic;      // per cloud_world point: 1 = labelled moving (empty: none)
+  int dynamic_points{0};
+  int map_skipped_points{0};         // downsampled points kept out of the map as moving
+  double label_time_s{0.0};
 };
+
+/// Labels moving returns of the undistorted scan (LiDAR frame, scan end) given the LiDAR pose in
+/// the LIO world; `dynamic` is pre-sized to the scan and zeroed. Runs after the EKF update and
+/// before map insertion; points labelled moving are kept out of the ikd-Tree map.
+using PointLabeler = std::function<void(
+      const Cloud & scan_lidar, const Eigen::Matrix3d & R_world_lidar,
+      const Eigen::Vector3d & t_world_lidar, double t_end, std::vector<uint8_t> & dynamic)>;
+
+/// Axis-aligned world box [xmin, xmax, ymin, ymax, zmin, zmax].
+using Box = std::array<float, 6>;
 
 void init(const Params & params);
 void reset();
+/// Installs (or clears with an empty function) the moving-point labeller. Downsampled scan
+/// points within `exclusion_voxel` (one voxel of dilation) of a moving point are not mapped;
+/// insertions are held `map_delay_scans` scans and also dropped if a later scan in that window
+/// labels a moving point next to them.
+void set_point_labeler(PointLabeler labeler, double exclusion_voxel = 0.2, int map_delay_scans = 3);
+/// Removes map points inside the boxes (late moving-object evidence); returns points deleted.
+int delete_boxes(const std::vector<Box> & boxes);
+/// Copy of the current ikd-Tree map (LIO world frame).
+void map_points(Cloud & out);
 void push_imu(const ImuSample & imu);
 /// Points use `curvature` = time offset from `t_begin` in milliseconds.
 void push_scan(double t_begin, const Cloud::Ptr & cloud);

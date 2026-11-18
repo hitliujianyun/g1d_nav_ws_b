@@ -34,7 +34,11 @@
 // POSSIBILITY OF SUCH DAMAGE.
 // g1d: the ROS node (subscribers, publishers, rosparam, tf, PCD saving, Python plotting) is
 // replaced by the fast_lio_api interface at the end of this file. The estimator code
-// (map segmentation, data sync, residual model, iterated EKF, map increment) is unchanged.
+// (map segmentation, data sync, residual model, iterated EKF, map increment) is unchanged,
+// except for the optional moving-point labeller that keeps labelled points out of the map.
+#include <algorithm>
+#include <deque>
+#include <unordered_set>
 #include <mutex>
 #include <math.h>
 #include <thread>
@@ -318,6 +322,50 @@ bool sync_packages(MeasureGroup &meas)
     return true;
 }
 
+// g1d: world voxels (size g_dyn_voxel) holding points labelled moving in the current scan.
+// With a labeller installed, map insertions are held for g_map_delay scans and dropped if any
+// scan in that window labels a moving point next to them (catches parts missed in one scan).
+std::unordered_set<int64_t> g_dyn_voxels;
+float g_dyn_voxel = 0.2f;
+int g_map_skipped = 0;
+bool g_label_active = false;
+int g_map_delay = 3;
+struct PendingInsert
+{
+    PointVector add;
+    PointVector no_downsample;
+};
+std::deque<PendingInsert> g_pending;
+std::deque<std::unordered_set<int64_t>> g_dyn_history;
+
+int64_t dyn_voxel_key(int x, int y, int z)
+{
+    return (static_cast<int64_t>(x) & 0x1FFFFF) << 42 | (static_cast<int64_t>(y) & 0x1FFFFF) << 21 |
+           (static_cast<int64_t>(z) & 0x1FFFFF);
+}
+
+bool near_dynamic(const PointType & p, const std::unordered_set<int64_t> & voxels)
+{
+    if (voxels.empty()) return false;
+    const int x = static_cast<int>(floor(p.x / g_dyn_voxel));
+    const int y = static_cast<int>(floor(p.y / g_dyn_voxel));
+    const int z = static_cast<int>(floor(p.z / g_dyn_voxel));
+    for (int dx = -1; dx <= 1; ++dx)
+        for (int dy = -1; dy <= 1; ++dy)
+            for (int dz = -1; dz <= 1; ++dz)
+                if (voxels.count(dyn_voxel_key(x + dx, y + dy, z + dz))) return true;
+    return false;
+}
+
+void drop_near_dynamic(PointVector & pts, const std::unordered_set<int64_t> & voxels)
+{
+    if (voxels.empty()) return;
+    const size_t before = pts.size();
+    pts.erase(std::remove_if(pts.begin(), pts.end(),
+        [&](const PointType & p) {return near_dynamic(p, voxels);}), pts.end());
+    g_map_skipped += static_cast<int>(before - pts.size());
+}
+
 int process_increments = 0;
 void map_incremental()
 {
@@ -325,10 +373,16 @@ void map_incremental()
     PointVector PointNoNeedDownsample;
     PointToAdd.reserve(feats_down_size);
     PointNoNeedDownsample.reserve(feats_down_size);
+    g_map_skipped = 0;
     for (int i = 0; i < feats_down_size; i++)
     {
         /* transform to world frame */
         pointBodyToWorld(&(feats_down_body->points[i]), &(feats_down_world->points[i]));
+        if (near_dynamic(feats_down_world->points[i], g_dyn_voxels))
+        {
+            ++g_map_skipped;
+            continue;
+        }
         /* decide if need add to map */
         if (!Nearest_Points[i].empty() && flg_EKF_inited)
         {
@@ -362,6 +416,27 @@ void map_incremental()
     }
 
     double st_time = omp_get_wtime();
+    if (g_label_active && g_map_delay > 0)
+    {
+        g_pending.push_back({std::move(PointToAdd), std::move(PointNoNeedDownsample)});
+        g_dyn_history.push_back(g_dyn_voxels);
+        while (static_cast<int>(g_dyn_history.size()) > g_map_delay + 1) g_dyn_history.pop_front();
+        PointToAdd.clear();
+        PointNoNeedDownsample.clear();
+        while (static_cast<int>(g_pending.size()) > g_map_delay)
+        {
+            PendingInsert & batch = g_pending.front();
+            for (const auto & voxels : g_dyn_history)
+            {
+                drop_near_dynamic(batch.add, voxels);
+                drop_near_dynamic(batch.no_downsample, voxels);
+            }
+            PointToAdd.insert(PointToAdd.end(), batch.add.begin(), batch.add.end());
+            PointNoNeedDownsample.insert(PointNoNeedDownsample.end(),
+                batch.no_downsample.begin(), batch.no_downsample.end());
+            g_pending.pop_front();
+        }
+    }
     add_point_size = ikdtree.Add_Points(PointToAdd, true);
     ikdtree.Add_Points(PointNoNeedDownsample, false); 
     add_point_size = PointToAdd.size() + PointNoNeedDownsample.size();
@@ -500,6 +575,8 @@ namespace
 {
 std::mutex g_api_mutex;
 Params g_params;
+PointLabeler g_labeler;
+std::vector<uint8_t> g_dynamic;
 
 void apply_params_locked(const Params & p)
 {
@@ -580,10 +657,58 @@ void reset_locked()
     corr_normvect.reset(new PointCloudXYZI(MAX_FEATS, 1));
     Nearest_Points.clear();
     pointSearchInd_surf.clear();
+    g_dyn_voxels.clear();
+    g_dynamic.clear();
+    g_pending.clear();
+    g_dyn_history.clear();
 
     apply_params_locked(g_params);
 }
 }  // namespace
+
+void set_point_labeler(PointLabeler labeler, double exclusion_voxel, int map_delay_scans)
+{
+    std::lock_guard<std::mutex> api(g_api_mutex);
+    g_labeler = std::move(labeler);
+    g_label_active = static_cast<bool>(g_labeler);
+    g_dyn_voxel = static_cast<float>(std::max(0.05, exclusion_voxel));
+    g_map_delay = std::max(0, map_delay_scans);
+    g_dyn_voxels.clear();
+    g_dyn_history.clear();
+    for (auto & batch : g_pending)
+    {
+        ikdtree.Add_Points(batch.add, true);
+        ikdtree.Add_Points(batch.no_downsample, false);
+    }
+    g_pending.clear();
+}
+
+int delete_boxes(const std::vector<Box> & boxes)
+{
+    std::lock_guard<std::mutex> api(g_api_mutex);
+    if (ikdtree.Root_Node == nullptr || boxes.empty()) return 0;
+    vector<BoxPointType> b(boxes.size());
+    for (size_t i = 0; i < boxes.size(); ++i)
+    {
+        for (int k = 0; k < 3; ++k)
+        {
+            b[i].vertex_min[k] = boxes[i][2 * k];
+            b[i].vertex_max[k] = boxes[i][2 * k + 1];
+        }
+    }
+    return ikdtree.Delete_Point_Boxes(b);
+}
+
+void map_points(Cloud & out)
+{
+    std::lock_guard<std::mutex> api(g_api_mutex);
+    out.clear();
+    if (ikdtree.Root_Node == nullptr) return;
+    PointVector storage;
+    ikdtree.flatten(ikdtree.Root_Node, storage, NOT_RECORD);
+    out.reserve(storage.size());
+    for (const auto & p : storage) out.push_back(p);
+}
 
 void init(const Params & params)
 {
@@ -727,6 +852,30 @@ bool process(Result * out)
     geoQuat.z = state_point.rot.coeffs()[2];
     geoQuat.w = state_point.rot.coeffs()[3];
 
+    /*** g1d: label moving points; they (and their neighbourhood) stay out of the map ***/
+    g_dyn_voxels.clear();
+    g_dynamic.clear();
+    double label_time = 0.0;
+    int dynamic_points = 0;
+    if (g_labeler && flg_EKF_inited)
+    {
+        const double tl = omp_get_wtime();
+        const M3D R_wl = state_point.rot.toRotationMatrix() * state_point.offset_R_L_I.toRotationMatrix();
+        const V3D t_wl = pos_lid;
+        g_dynamic.assign(feats_undistort->points.size(), 0);
+        g_labeler(*feats_undistort, R_wl, t_wl, lidar_end_time, g_dynamic);
+        for (size_t i = 0; i < g_dynamic.size(); ++i)
+        {
+            if (!g_dynamic[i]) continue;
+            ++dynamic_points;
+            const auto & q = feats_undistort->points[i];
+            const V3D w = R_wl * V3D(q.x, q.y, q.z) + t_wl;
+            g_dyn_voxels.insert(dyn_voxel_key(static_cast<int>(floor(w.x() / g_dyn_voxel)),
+                static_cast<int>(floor(w.y() / g_dyn_voxel)), static_cast<int>(floor(w.z() / g_dyn_voxel))));
+        }
+        label_time = omp_get_wtime() - tl;
+    }
+
     /*** add the feature points to map kdtree ***/
     map_incremental();
 
@@ -770,6 +919,10 @@ bool process(Result * out)
         {
             RGBpointBodyToWorld(&feats_undistort->points[i], &out->cloud_world->points[i]);
         }
+        out->dynamic.swap(g_dynamic);
+        out->dynamic_points = dynamic_points;
+        out->map_skipped_points = g_map_skipped;
+        out->label_time_s = label_time;
         out->process_time_s = omp_get_wtime() - t0;
     }
     return true;

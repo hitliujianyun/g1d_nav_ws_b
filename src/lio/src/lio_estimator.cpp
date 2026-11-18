@@ -69,6 +69,7 @@ LioConfig LioConfig::fromYaml(const YAML::Node & root)
   h.max_process_time_s = get(root, "lio.health.max_process_time_s", h.max_process_time_s);
   h.max_z_drift_m = get(root, "lio.health.max_z_drift_m", h.max_z_drift_m);
   h.min_normal_eigenvalue = get(root, "lio.health.min_normal_eigenvalue", h.min_normal_eigenvalue);
+  c.dynamic = DynamicDetectorParams::fromYaml(root);
   return c;
 }
 
@@ -84,12 +85,35 @@ LioEstimator::LioEstimator(const LioConfig & config)
   T_imu_lidar_.translation() = Eigen::Vector3d(T[0], T[1], T[2]);
   T_imu_lidar_.linear() << R[0], R[1], R[2], R[3], R[4], R[5], R[6], R[7], R[8];
   fast_lio_api::init(config_.fastlio);
+  if (config_.dynamic.enabled) {
+    detector_ = std::make_unique<DynamicDetector>(config_.dynamic);
+    fast_lio_api::set_point_labeler(
+      detector_->labeler(), config_.dynamic.exclusion_voxel, config_.dynamic.map_delay_scans);
+  } else {
+    fast_lio_api::set_point_labeler({});
+  }
 }
 
 LioEstimator::~LioEstimator()
 {
+  fast_lio_api::set_point_labeler({});
   fast_lio_api::reset();
   g_instances.fetch_sub(1);
+}
+
+int LioEstimator::deleteMapBoxes(const std::vector<fast_lio_api::Box> & boxes)
+{
+  return fast_lio_api::delete_boxes(boxes);
+}
+
+std::vector<Eigen::Vector3f> LioEstimator::mapPoints() const
+{
+  fast_lio_api::Cloud c;
+  fast_lio_api::map_points(c);
+  std::vector<Eigen::Vector3f> out;
+  out.reserve(c.size());
+  for (const auto & p : c.points) {out.emplace_back(p.x, p.y, p.z);}
+  return out;
 }
 
 void LioEstimator::reset()
@@ -135,17 +159,35 @@ bool LioEstimator::process(LioOutput * out)
   out->health = health_.update(r);
 
   out->cloud_world.clear();
+  out->cloud_dynamic.clear();
+  out->dynamic_stats = detector_ ? detector_->lastStats() : DynamicDetectorStats{};
   if (r.cloud_world && !r.cloud_world->empty()) {
-    pcl::VoxelGrid<fast_lio_api::Point> vg;
     const float leaf = static_cast<float>(config_.output_voxel);
-    vg.setLeafSize(leaf, leaf, leaf);
-    vg.setInputCloud(r.cloud_world);
-    fast_lio_api::Cloud ds;
-    vg.filter(ds);
-    out->cloud_world.reserve(ds.size());
-    for (const auto & p : ds.points) {out->cloud_world.emplace_back(p.x, p.y, p.z);}
+    auto downsample = [leaf](const fast_lio_api::Cloud::Ptr & in, std::vector<Eigen::Vector3f> & dst) {
+        if (in->empty()) {return;}
+        pcl::VoxelGrid<fast_lio_api::Point> vg;
+        vg.setLeafSize(leaf, leaf, leaf);
+        vg.setInputCloud(in);
+        fast_lio_api::Cloud ds;
+        vg.filter(ds);
+        dst.reserve(ds.size());
+        for (const auto & p : ds.points) {dst.emplace_back(p.x, p.y, p.z);}
+      };
+    if (r.dynamic.size() == r.cloud_world->size() && r.dynamic_points > 0) {
+      fast_lio_api::Cloud::Ptr st(new fast_lio_api::Cloud()), dy(new fast_lio_api::Cloud());
+      st->reserve(r.cloud_world->size());
+      dy->reserve(static_cast<size_t>(r.dynamic_points));
+      for (size_t i = 0; i < r.dynamic.size(); ++i) {
+        (r.dynamic[i] ? dy : st)->push_back(r.cloud_world->points[i]);
+      }
+      downsample(st, out->cloud_world);
+      downsample(dy, out->cloud_dynamic);
+    } else {
+      downsample(r.cloud_world, out->cloud_world);
+    }
   }
   r.cloud_world.reset();
+  r.dynamic.clear();
   out->stats = r;
   return true;
 }

@@ -9,6 +9,7 @@
 
 #include "fast_lio_api.h"
 #include "g1d/common/time.hpp"
+#include "g1d/lio/dynamic_detector.hpp"
 #include "g1d/lio/lio_health.hpp"
 #include "g1d/lio/livox_frame.hpp"
 #include "g1d/lio/preprocess.hpp"
@@ -24,6 +25,7 @@ struct LioConfig
   std::vector<Box> self_boxes;          // head frame
   double output_voxel{0.05};            // registered cloud downsampling (m)
   HealthParams health;
+  DynamicDetectorParams dynamic;        // M-detector moving-point labelling (lio.dynamic)
 
   /// Reads `lio`, `self_filter` and `kinematics.head_to_livox` from the project config.
   static LioConfig fromYaml(const YAML::Node & root);
@@ -39,8 +41,10 @@ struct LioOutput
   Eigen::Vector3d gravity_world{0.0, 0.0, -9.81};
   Eigen::Matrix<double, 6, 6> pose_cov{Eigen::Matrix<double, 6, 6>::Identity()};
   HealthStatus health;
-  fast_lio_api::Result stats;           // estimator diagnostics (cloud_world cleared)
-  std::vector<Eigen::Vector3f> cloud_world;  // registered scan, LIO world, voxel-downsampled
+  fast_lio_api::Result stats;           // estimator diagnostics (cloud_world / dynamic cleared)
+  std::vector<Eigen::Vector3f> cloud_world;    // registered static returns, voxel-downsampled
+  std::vector<Eigen::Vector3f> cloud_dynamic;  // registered returns labelled moving, downsampled
+  DynamicDetectorStats dynamic_stats;
 };
 
 /// Thread-safe facade over FAST-LIO2: preprocessing, estimation, health and clock mapping.
@@ -60,6 +64,11 @@ public:
   /// Runs one estimator step if a complete scan + IMU window is buffered.
   bool process(LioOutput * out);
   void reset();
+  /// Late moving-object evidence: removes map points inside world boxes [x0,x1,y0,y1,z0,z1].
+  int deleteMapBoxes(const std::vector<fast_lio_api::Box> & boxes);
+  /// Snapshot of the estimator map (LIO world).
+  std::vector<Eigen::Vector3f> mapPoints() const;
+  bool dynamicEnabled() const {return detector_ != nullptr;}
 
   const LioConfig & config() const {return config_;}
   const ClockMapper & clock() const {return clock_;}
@@ -72,6 +81,7 @@ private:
   ClockMapper clock_;
   std::mutex mutex_;
   Eigen::Isometry3d T_imu_lidar_{Eigen::Isometry3d::Identity()};
+  std::unique_ptr<DynamicDetector> detector_;
 };
 
 }  // namespace g1d::lio

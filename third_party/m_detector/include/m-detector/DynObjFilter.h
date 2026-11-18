@@ -1,40 +1,31 @@
 #ifndef DYN_OBJ_FLT_H
 #define DYN_OBJ_FLT_H
 
-#include <omp.h>
+// g1d port: ROS, OpenCV, PCL I/O and the DBSCAN cluster stage removed; std::execution::par
+// replaced by OpenMP; parameters come from m_detector::ParamSource instead of ros::NodeHandle.
 #include <mutex>
 #include <math.h>
-#include <ros/ros.h>
-// #include <so3_math.h>
 #include <Eigen/Core>
 #include <types.h>
-#include <pcl/io/pcd_io.h>
-#include <pcl/io/ply_io.h>
-#include <nav_msgs/Path.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
-#include <nav_msgs/Odometry.h>
-#include <sensor_msgs/CompressedImage.h>
-#include <pcl/filters/voxel_grid.h>
-#include <sensor_msgs/PointCloud2.h>
-#include <pcl_conversions/pcl_conversions.h>
 #include <Eigen/LU>
-#include <m-detector/DynObjCluster.h>
 #include <parallel_q.h>
 #include <algorithm>
+#include <array>
 #include <chrono>
-#include <execution>
+#include <deque>
+#include <fstream>
+#include <functional>
+#include <memory>
 #include <mutex>
-#include <opencv2/opencv.hpp>
 #include <string>
-#include <opencv2/highgui.hpp>
-#include <opencv2/highgui/highgui.hpp>
-// #include <tinycolormap.hpp>
+#include <vector>
+#include <m-detector/compat.h>
 
 
 using namespace std;
 using namespace Eigen;
-using namespace cv;
 
 /*** For dynamic object filtering ***/
 #define PI_MATH (3.141593f)
@@ -75,7 +66,7 @@ struct point_soph
     array<float, MAP_NUM> last_depth_interps = {};
     array<V3F, HASH_PRIM> last_vecs = {};
     array<Vector3i, HASH_PRIM> last_positions = {};   
-    typedef boost::shared_ptr<point_soph> Ptr;
+    typedef std::shared_ptr<point_soph> Ptr;
     point_soph(V3D & point, float & hor_resolution_max, float & ver_resolution_max)
     {
         vec(2)     = float(point.norm());
@@ -217,11 +208,10 @@ public:
     int*             max_depth_index_all = nullptr;
     int*             min_depth_index_all = nullptr;
     std::vector<int> index_vector;
-    typedef boost::shared_ptr<DepthMap> Ptr;
+    typedef std::shared_ptr<DepthMap> Ptr;
 
     DepthMap()
     {   
-        printf("build depth map2\n");
         depth_map.assign(MAX_2D_N, std::vector<point_soph*>());
         
         time = 0.;
@@ -320,8 +310,7 @@ public:
         project_R = rot;
         project_T = transl;
         map_index = frame;
-        double t = omp_get_wtime();
-        std::for_each(std::execution::par, index_vector.begin(), index_vector.end(), [&](const int &i)
+        m_detector::parallel_for(MAX_2D_N, [&](int i)
         {
             depth_map[i].clear();
         });
@@ -358,7 +347,6 @@ public:
     int laserCloudSteadObj_accu_limit = 5;
     float voxel_filter_size = 0.1;
     
-    DynObjCluster Cluster;
     bool cluster_coupled = false, cluster_future = false;
     std::vector<int> dyn_tag_cluster;
     std::vector<int> dyn_tag_origin;
@@ -423,7 +411,6 @@ public:
     bool dyn_filter_en = true;
     mutex mtx_case2, mtx_case3; 
     std::vector<int> pos_offset;
-    ros::Publisher demo_pcl_display;
     string time_file;
     ofstream time_out;
 
@@ -435,12 +422,15 @@ public:
     DynObjFilter(float windows_dur, float hor_resolution, float ver_resolution)
     : depth_map_dur(windows_dur), hor_resolution_max(hor_resolution), ver_resolution_max(ver_resolution)
     {};
-    ~DynObjFilter(){};
+    ~DynObjFilter()
+    {
+        for (point_soph * p : point_soph_pointers) delete [] p;
+    };
+    DynObjFilter(const DynObjFilter &) = delete;
+    DynObjFilter & operator=(const DynObjFilter &) = delete;
 
-    void init(ros::NodeHandle& nh);
+    void init(const m_detector::ParamSource& nh);
     void filter(PointCloudXYZI::Ptr feats_undistort, const M3D & rot_end, const V3D & pos_end, const double & scan_end_time);
-    void publish_dyn(const ros::Publisher & pub_point_out, const ros::Publisher & pub_frame_out, const ros::Publisher & pub_steady_points, const double & scan_end_time);
-    void set_path(string file_path, string file_path_origin);
 
     void  Points2Buffer(vector<point_soph*> &points, std::vector<int> &index_vector);
     void  Buffer2DepthMap(double cur_time);
@@ -469,11 +459,6 @@ public:
     bool  Case3DepthConsistencyCheck(const point_soph & p, const DepthMap &map_info);
     bool  CheckVerFoV(const point_soph & p, const DepthMap &map_info);
     void  CheckNeighbor(const point_soph & p, const DepthMap &map_info, float &max_depth, float &min_depth);
-
-private:
-    bool is_set_path = false;
-    string out_file;
-    string out_file_origin;
 };
 
 #endif

@@ -13,4 +13,10 @@
 
 主要改动方向：
 - ROS / PCL 依赖替换为 `pcl_lite`（`../../src/pcl_lite`）与本项目的数据结构；
-- `laserMapping.cpp` 中的 ROS 节点改造为可嵌入的 `FastLio` 接口（`../../src/lio/fast_lio_core.*`）。
+- `laserMapping.cpp` 中的 ROS 节点改造为可嵌入的 `fast_lio_api` 接口（`include/fast_lio_api.h`，
+  上层封装见 `../../src/lio/lio_estimator.*`）；
+- 动态点（M8）：EKF 更新之后、`map_incremental()` 之前调用可选的逐点动态标注回调
+  （`set_point_labeler`）。被标为动态的点及其邻域（`exclusion_voxel`，膨胀一格）不插入 ikd-Tree；
+  有回调时插入延迟 `map_delay_scans` 帧，窗口内任一帧在附近标出动态点就丢弃（时间一致性）。
+  另加 `delete_boxes()`（按世界坐标盒删除地图点，用于迟到的相机人员证据）与 `map_points()`
+  （地图快照）。估计器本身（残差、迭代 EKF、ikd-Tree）未改。

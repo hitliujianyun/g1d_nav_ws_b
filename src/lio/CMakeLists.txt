@@ -35,11 +35,27 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     -Wno-overflow -Wno-ignored-qualifiers -Wno-pessimizing-move -Wno-catch-value)
 endif()
 
+# M-detector moving-point detection (GPL-2.0, de-ROSed port in its own library / directory).
+set(MDET ${PROJECT_SOURCE_DIR}/third_party/m_detector)
+add_library(g1d_mdetector STATIC ${MDET}/src/DynObjFilter.cpp)
+target_include_directories(g1d_mdetector PUBLIC
+  ${MDET}/include
+  ${PROJECT_SOURCE_DIR}/src/pcl_lite/include
+)
+target_link_libraries(g1d_mdetector PUBLIC g1d_eigen g1d_openmp)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(g1d_mdetector PRIVATE
+    -Wno-unused-variable -Wno-unused-but-set-variable -Wno-reorder -Wno-maybe-uninitialized
+    -Wno-sign-compare -Wno-unused-function -Wno-misleading-indentation -Wno-switch-unreachable
+    -Wno-parentheses -Wno-narrowing -Wno-unused-parameter -Wno-comment)
+endif()
+
 add_library(g1d_lio STATIC
   src/livox_frame.cpp
   src/preprocess.cpp
   src/lio_health.cpp
+  src/dynamic_detector.cpp
   src/lio_estimator.cpp
 )
 target_include_directories(g1d_lio PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(g1d_lio PUBLIC g1d_fastlio g1d_common)
+target_link_libraries(g1d_lio PUBLIC g1d_fastlio g1d_common PRIVATE g1d_mdetector)
