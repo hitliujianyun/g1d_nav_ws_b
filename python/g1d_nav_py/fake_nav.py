@@ -6,7 +6,8 @@ local/global_costmap, param_state -- and executes rt/nav/goal with A* + pure pur
 rt/nav/cmd_vel, so g1d_base_guard and g1d_web can be exercised end to end. By default it also
 runs the mock chassis (MockRobot) in the same process.
 
-    python -m g1d_nav_py.fake_nav --domain 1 [--world lab] [--no-mock]
+    python -m g1d_nav_py.fake_nav --domain 1 [--world lab] [--no-mock] [--pedestrians 2]
+                                  [--person-points]
 """
 from __future__ import annotations
 
@@ -187,6 +188,34 @@ class StaticCostmap:
         return path
 
 
+class Pedestrian:
+    """0.4 x 0.4 x 1.7 m box walking back and forth between a and b at `speed` m/s."""
+
+    def __init__(self, a: Tuple[float, float], b: Tuple[float, float], speed: float = 1.0,
+                 t0: float = 0.0, size: Tuple[float, float, float] = (0.4, 0.4, 1.7)):
+        self.a, self.b = np.asarray(a, float), np.asarray(b, float)
+        self.speed, self.t0, self.size = float(speed), float(t0), size
+
+    def position(self, now: float) -> np.ndarray:
+        length = float(np.linalg.norm(self.b - self.a))
+        if length < 1e-6:
+            return self.a.copy()
+        s = (self.speed * (now - self.t0)) % (2 * length)
+        s = s if s <= length else 2 * length - s
+        return self.a + (self.b - self.a) * (s / length)
+
+    def box(self, now: float) -> Box3:
+        x, y = self.position(now)
+        hx, hy, h = self.size[0] / 2, self.size[1] / 2, self.size[2]
+        return (x - hx, y - hy, 0.0, x + hx, y + hy, h)
+
+
+def default_pedestrians(world: str, n: int) -> List[Pedestrian]:
+    """Pedestrians crossing the open areas of the lab world (n <= 3)."""
+    paths = [((3.3, -3.0), (3.3, 3.0)), ((0.0, 2.8), (8.0, 2.8)), ((7.0, -3.2), (7.0, 0.2))]
+    return [Pedestrian(a, b, speed=0.8 + 0.2 * i) for i, (a, b) in enumerate(paths[:max(0, n)])]
+
+
 def wrap(a: float) -> float:
     return math.atan2(math.sin(a), math.cos(a))
 
@@ -197,8 +226,11 @@ class FakeNav:
                "recovery_rotate_rad")
 
     def __init__(self, boxes: Sequence[Box3], *, vx_max: float = 0.4, wz_max: float = 0.6,
-                 rays_per_frame: int = 6000, seed: int = 5):
+                 rays_per_frame: int = 6000, seed: int = 5,
+                 pedestrians: Sequence["Pedestrian"] = (), person_points: bool = False):
         self.boxes = list(boxes)
+        self.pedestrians = list(pedestrians)
+        self.publish_person_points = person_points
         self.static = StaticCostmap(self.boxes)
         self.seen = np.zeros_like(self.static.cost, bool)
         self.vx_max, self.wz_max = vx_max, wz_max
@@ -387,6 +419,15 @@ class FakeNav:
     # ---- sensing ----------------------------------------------------------------------------
     def lidar_frame(self) -> Tuple[np.ndarray, np.ndarray]:
         """(points in odom, points in the LIO frame) for one 100 ms Mid-360S frame."""
+        pts, pts_lio, _ = self.lidar_frame_labelled(time.monotonic())
+        return pts, pts_lio
+
+    def pedestrian_boxes(self, now: float) -> List[Box3]:
+        return [p.box(now) for p in self.pedestrians]
+
+    def lidar_frame_labelled(self, now: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """As lidar_frame plus a per-point moving flag (returns on pedestrians: the labels
+        M-detector would produce, here exact)."""
         x, y, yaw = self.pose
         c, s = math.cos(yaw), math.sin(yaw)
         origin = np.array([x + c * LIDAR_XYZ[0] - s * LIDAR_XYZ[1], y + s * LIDAR_XYZ[0] + c * LIDAR_XYZ[1],
@@ -395,11 +436,26 @@ class FakeNav:
         el = np.radians(self.rng.uniform(-52.0, 7.0, self.n_rays))
         dirs = np.c_[np.cos(el) * np.cos(az + yaw), np.cos(el) * np.sin(az + yaw), np.sin(el)]
         r = raycast3d(origin, dirs, self.boxes, 20.0)
+        moving = np.zeros(r.shape[0], bool)
+        peds = self.pedestrian_boxes(now)
+        if peds:
+            rp = raycast3d(origin, dirs, peds, 20.0)
+            moving = np.isfinite(rp) & (rp < r)
+            r = np.where(moving, rp, r)
         ok = np.isfinite(r) & (r > 0.3)
         pts = origin + dirs[ok] * (r[ok] + self.rng.normal(0, 0.01, int(ok.sum())))[:, None]
         pts_lio = (pts - self.t_odom_lio) @ self.R_odom_lio
         self._mark_seen(origin[0], origin[1])
-        return pts.astype(np.float32), pts_lio.astype(np.float32)
+        return pts.astype(np.float32), pts_lio.astype(np.float32), moving[ok]
+
+    def person_points(self, pts_odom: np.ndarray, moving: np.ndarray) -> np.ndarray:
+        """Camera stand-in: pedestrian returns in the head camera's view (+-45 deg, < 6 m)."""
+        x, y, yaw = self.pose
+        p = pts_odom[moving]
+        a = np.arctan2(p[:, 1] - y, p[:, 0] - x) - yaw
+        a = (a + math.pi) % (2 * math.pi) - math.pi
+        keep = (np.abs(a) < math.radians(45)) & (np.hypot(p[:, 0] - x, p[:, 1] - y) < 6.0)
+        return p[keep]
 
     def _mark_seen(self, x: float, y: float, r: float = 8.0) -> None:
         st = self.static
@@ -494,6 +550,7 @@ class FakeNav:
                                 ("local", "rt/nav/local_costmap", OccupancyGrid_),
                                 ("global", "rt/nav/global_costmap", OccupancyGrid_),
                                 ("params", "rt/nav/param_state", String_),
+                                ("person", "rt/nav/person_points", PointCloud2_),
                                 ("cmd", "rt/nav/cmd_vel", Twist_)):
             p = ChannelPublisher(topic, typ)
             p.Init()
@@ -545,8 +602,13 @@ class FakeNav:
                 self.pubs["cmd"].Write(msgs.twist(*self.cmd))
             if pose is not None:
                 if k % 2 == 0:                              # 10 Hz LIO
-                    pts, pts_lio = self.lidar_frame()
-                    self.pubs["cloud"].Write(msgs.make_cloud_xyz(pts_lio, "odom_lio", wall))
+                    pts, pts_lio, moving = self.lidar_frame_labelled(now)
+                    self.pubs["cloud"].Write(msgs.make_cloud_xyzl(pts_lio[~moving], pts_lio[moving],
+                                                                  "odom_lio", wall))
+                    if self.publish_person_points and moving.any():
+                        pp = self.person_points(pts, moving)
+                        self.pubs["person"].Write(msgs.make_cloud_xyz(
+                            (pp - self.t_odom_lio) @ self.R_odom_lio, "odom_lio", wall))
                     self.pubs["obst"].Write(msgs.make_cloud_xyz(self.obstacle_points_base(pts),
                                                                 "base_link", wall))
                     self.pubs["lio_health"].Write(msgs.json_msg(
@@ -599,14 +661,17 @@ def _quat_from_matrix(r: np.ndarray) -> List[float]:
     return [x, y, z, w]
 
 
-def start_sim(world: str = "lab", with_mock: bool = True, http_port: Optional[int] = None):
-    """Starts the fake nav stack (+ mock chassis) on an initialised ChannelFactory."""
+def start_sim(world: str = "lab", with_mock: bool = True, http_port: Optional[int] = None,
+              pedestrians: int = 0, person_points: bool = False):
+    """Starts the fake nav stack (+ mock chassis) on an initialised ChannelFactory. Pedestrians
+    are seen by the simulated Mid-360S (labelled moving) but not by the mock chassis LiDAR."""
     boxes = make_world3d(world)
     robot = None
     if with_mock:
         robot = MockRobot(chassis_boxes(boxes), MockParams())
         robot.start(http_port)
-    nav = FakeNav(boxes)
+    nav = FakeNav(boxes, pedestrians=default_pedestrians(world, pedestrians),
+                  person_points=person_points)
     nav.start()
     return nav, robot
 
@@ -618,10 +683,15 @@ def main(argv=None) -> int:
     ap.add_argument("--world", default="lab", choices=("lab", "empty"))
     ap.add_argument("--no-mock", action="store_true", help="do not run the mock chassis in-process")
     ap.add_argument("--http-port", type=int, default=None, help="fake chassis HTTP API port")
+    ap.add_argument("--pedestrians", type=int, default=0,
+                    help="walking pedestrians (0-3), labelled moving in registered_cloud")
+    ap.add_argument("--person-points", action="store_true",
+                    help="also publish rt/nav/person_points (camera stand-in)")
     args = ap.parse_args(argv)
     from unitree_sdk2py.core.channel import ChannelFactoryInitialize
     ChannelFactoryInitialize(args.domain, None if args.net_if in (None, "", "auto") else args.net_if)
-    nav, robot = start_sim(args.world, not args.no_mock, args.http_port)
+    nav, robot = start_sim(args.world, not args.no_mock, args.http_port, args.pedestrians,
+                           args.person_points)
     print(f"fake nav running (domain {args.domain}, world {args.world}); Ctrl-C to stop", flush=True)
     try:
         while True:

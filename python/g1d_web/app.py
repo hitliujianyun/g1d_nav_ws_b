@@ -28,6 +28,7 @@ from .wsproto import OP_TEXT, WebSocket, WebSocketClosed
 log = logging.getLogger("g1d.web")
 
 K_SCAN, K_MAP, K_MAP_RESET, K_OBST, K_CHASSIS, K_LOCAL, K_GLOBAL = 1, 2, 3, 4, 5, 6, 7
+K_DYNAMIC, K_PERSON = 8, 9   # points labelled moving (M-detector), camera person points
 TICK_HZ = 20.0
 MAX_STREAM_BACKLOG = 400
 GOAL_KEYS = {"id", "mode", "frame", "stamp", "x", "y", "yaw", "use_yaw", "xy_tolerance",
@@ -109,6 +110,26 @@ class WebApp:
         self.grid_z = (float(w.get("grid_z_min", 0.10)), float(w.get("grid_z_max", 1.80)))
         self.builder = mapping.MapBuilder(float(w.get("map_voxel", 0.05)),
                                           int(w.get("map_max_points", 3_000_000)))
+        kf = w.get("keyframes", {}) or {}
+        self.recordings_dir = os.path.join(root, w.get("recordings_dir", "recordings"))
+        self.recorder = mapping.KeyframeRecorder(
+            self.recordings_dir, min_dist=float(kf.get("min_dist", 0.3)),
+            min_yaw=float(kf.get("min_yaw", 0.3)), min_dt=float(kf.get("min_dt", 0.5)),
+            max_dt=float(kf.get("max_dt", 5.0)), voxel=float(kf.get("voxel", 0.05)),
+            max_frames=int(kf.get("max_frames", 4000)))
+        self.record_on_start = bool(kf.get("enabled", True))
+        cl = w.get("cleaning", {}) or {}
+        self.clean_cfg = None if not cl.get("enabled", True) else {
+            "resolution": float(cl.get("resolution", 0.1)), "d_s": float(cl.get("d_s", 0.2)),
+            "d_p": int(cl.get("d_p", 1)), "method": str(cl.get("method", "auto"))}
+        self.dufomap_ok = mapping.dufomap_available()
+        self.latest_dynamic: Optional[np.ndarray] = None
+        self.dynamic_version = 0
+        self.sent_dynamic_version = 0
+        ext_t = get(cfg, "lio.extrinsic_T", [0.0, 0.0, 0.0])
+        ext_r = get(cfg, "lio.extrinsic_R", [1, 0, 0, 0, 1, 0, 0, 0, 1])
+        self.hub.t_imu_lidar = np.asarray(ext_t, np.float64).reshape(3)
+        self.hub.R_imu_lidar = np.asarray(ext_r, np.float64).reshape(3, 3)
         self.map_paused_reason = ""
         self.map_enabled = True
         self.new_map: Deque[np.ndarray] = collections.deque()
@@ -159,23 +180,33 @@ class WebApp:
         }
 
     # ---- DDS thread: LIO clouds -> map ------------------------------------------------------
-    def _on_cloud(self, pts_lio: np.ndarray) -> None:
+    def _on_cloud(self, stamp: float, static_lio: np.ndarray, dynamic_lio: np.ndarray) -> None:
         r, t, valid = self.hub.T_odom_lio()
-        pts = (pts_lio.astype(np.float64) @ r.T + t).astype(np.float32)
+        pts = (static_lio.astype(np.float64) @ r.T + t).astype(np.float32)
+        dyn = (dynamic_lio.astype(np.float64) @ r.T + t).astype(np.float32)
         if pts.shape[0] > self.scan_max:
             pts_view = pts[:: int(math.ceil(pts.shape[0] / self.scan_max))]
         else:
             pts_view = pts
         self.latest_scan = (pts_view, valid)
         self.scan_version += 1
+        self.latest_dynamic = dyn
+        self.dynamic_version += 1
         if not valid:
             self.map_paused_reason = "等待 g1d_nav 的 T_odom_lio（rt/nav/debug）"
             return
         self.map_paused_reason = "" if self.map_enabled else "已暂停"
         if self.map_enabled:
+            # Moving points never enter the accumulated map.
             new = self.builder.add_cloud(pts)
             if new.shape[0]:
                 self.new_map.append(new)
+            if self.record_on_start and not self.recorder.active:
+                self.recorder.start()
+            if self.recorder.active:
+                pose = self.hub.sensor_pose_odom(stamp)
+                if pose is not None:
+                    self.recorder.add(stamp, pts, dyn, pose[0], pose[1])
 
     # ---- websocket session ------------------------------------------------------------------
     async def session(self, ws: WebSocket, addr: str) -> None:
@@ -285,7 +316,7 @@ class WebApp:
             self.log_event("warn", f"{c.id} {'按下急停' if on else '解除急停'}")
             return None
         if t == "map" and msg.get("action") == "export":
-            return self.export_map()
+            return self.start_export(c)
         if t == "map" and msg.get("action") == "list":
             return {"type": "exports", "items": mapping.list_exports(self.maps_dir)}
         if t == "mission" and msg.get("action") == "list":
@@ -342,12 +373,24 @@ class WebApp:
             if a == "reset":
                 self.builder.reset(float(msg["voxel"]) if msg.get("voxel") else None)
                 self.new_map.clear()
+                if self.recorder.active:
+                    self.recorder.start()   # keyframes must match the map being exported
                 for cl in self.clients.values():
                     cl.needs_full_map = True
                     cl.event.set()
                 self.log_event("info", f"地图已重置（体素 {self.builder.voxel} m）")
             elif a == "pause":
                 self.map_enabled = not bool(msg.get("paused"))
+            elif a == "record":
+                # Keyframe recording for offline cleaning / training data (new session on start).
+                if msg.get("on"):
+                    self.record_on_start = True
+                    d = self.recorder.start()
+                    self.log_event("info", f"开始记录关键帧 {os.path.relpath(d, self.root)}")
+                else:
+                    self.record_on_start = False
+                    self.recorder.stop()
+                    self.log_event("info", "停止记录关键帧")
             else:
                 raise ValueError("unknown map action")
             return None
@@ -436,18 +479,51 @@ class WebApp:
         return out
 
     # ---- map export -------------------------------------------------------------------------
-    def export_map(self) -> Dict[str, Any]:
+    def _export_files(self) -> Dict[str, Any]:
+        """Writes the export (no client interaction: may run on a worker thread)."""
         cm = self.hub.grids.get("global_costmap")
         costmap = None
         if cm:
             costmap = {"width": cm["width"], "height": cm["height"], "resolution": cm["resolution"],
                        "origin": cm["origin"], "data": np.frombuffer(cm["data"], np.uint8)}
         _, _, valid = self.hub.T_odom_lio()
-        meta = mapping.export_map(self.builder, self.maps_dir, resolution=self.grid_res,
+        rec = self.recorder.stats()
+        frames = mapping.list_frames(rec["dir"]) if rec["dir"] else []
+        return mapping.export_map(self.builder, self.maps_dir, resolution=self.grid_res,
                                   z_min=self.grid_z[0], z_max=self.grid_z[1], costmap=costmap,
-                                  extra_meta={"T_odom_lio_valid": valid})
-        self.log_event("info", f"地图已导出 maps/{meta['name']}（{meta['points']} 点）")
+                                  extra_meta={"T_odom_lio_valid": valid, "keyframes": rec["dir"]},
+                                  frame_files=frames, clean=self.clean_cfg)
+
+    def _export_done(self, meta: Dict[str, Any]) -> Dict[str, Any]:
+        cleaning = meta.get("cleaning")
+        note = ""
+        if cleaning:
+            note = f"，{cleaning['method']} 清理移除 {cleaning['removed']} 点"
+            if cleaning.get("fallback_reason"):
+                note += f"（DUFOMap 失败：{cleaning['fallback_reason']}）"
+        self.log_event("info", f"地图已导出 maps/{meta['name']}（{meta['points']} 点{note}）")
         return {"type": "exports", "items": mapping.list_exports(self.maps_dir), "new": meta["name"]}
+
+    def export_map(self) -> Dict[str, Any]:
+        return self._export_done(self._export_files())
+
+    def start_export(self, c: Client) -> Optional[Dict[str, Any]]:
+        """Cleaning can take a while on a large map: export on a worker thread, reply when done."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return self.export_map()
+        self.log_event("info", "正在导出地图" + ("（含动态残留清理）" if self.clean_cfg else ""))
+
+        def done(fut):
+            try:
+                c.push_text(self._export_done(fut.result()))
+            except Exception as e:  # noqa: BLE001 - report any export failure to the client
+                log.exception("export failed")
+                c.push_text({"type": "error", "text": f"导出失败：{e}"})
+
+        loop.run_in_executor(None, self._export_files).add_done_callback(done)
+        return None
 
     # ---- periodic loop ----------------------------------------------------------------------
     def _changed(self, key: str) -> bool:
@@ -503,6 +579,17 @@ class WebApp:
             for c in self.clients.values():
                 if not c.needs_full_map:
                     c.push_stream(data)
+        if self.dynamic_version != self.sent_dynamic_version and self.latest_dynamic is not None:
+            self.sent_dynamic_version = self.dynamic_version
+            pts = self.latest_dynamic[:: max(1, self.latest_dynamic.shape[0] // 8000 + 1)]
+            data = pack(K_DYNAMIC, {"n": int(pts.shape[0])}, np.ascontiguousarray(pts).tobytes())
+            for c in self.clients.values():
+                c.push_slot(K_DYNAMIC, data)
+        if self._changed("person"):
+            _, pts = hub.clouds["person"]
+            data = pack(K_PERSON, {"n": int(pts.shape[0])}, hub.cloud_in_odom(pts).tobytes())
+            for c in self.clients.values():
+                c.push_slot(K_PERSON, data)
         for key, kind in (("obstacles", K_OBST), ("chassis", K_CHASSIS)):
             if self._changed(key) and p:
                 _, pts = hub.clouds[key]
@@ -538,7 +625,8 @@ class WebApp:
             "mission": self.mission.snapshot(),
             "test": self.test.summary() if self.test else None,
             "map": dict(self.builder.stats(), paused=self.map_paused_reason, enabled=self.map_enabled,
-                        T_valid=t_valid),
+                        T_valid=t_valid, recording=self.recorder.stats(),
+                        dufomap=self.dufomap_ok),
             "control": {"owner": self.owner,
                         "owner_name": self.clients[self.owner].name if self.owner in self.clients else None,
                         "clients": len(self.clients)},

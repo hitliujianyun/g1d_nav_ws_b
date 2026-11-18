@@ -194,6 +194,8 @@ export class View {
     this.scan = new FramePoints(s, 0x6ef2c8, 0.05);
     this.obst = new FramePoints(s, 0xff4d6d, 0.07);
     this.chassis = new FramePoints(s, 0xffd23f, 0.07);
+    this.dynamic = new FramePoints(s, 0xff8c1a, 0.08);
+    this.person = new FramePoints(s, 0xc77dff, 0.09);
     this.local = new CostmapLayer(s, 0.012);
     this.global = new CostmapLayer(s, 0.006);
     this.global.setVisible(false);
@@ -204,6 +206,7 @@ export class View {
     this.trailPts = [];
     this.layers.map = [this.map.points]; this.layers.scan = [this.scan.points];
     this.layers.obstacles = [this.obst.points]; this.layers.chassis = [this.chassis.points];
+    this.layers.dynamic = [this.dynamic.points]; this.layers.person = [this.person.points];
     this.layers.globalPath = [this.globalPath.line]; this.layers.localPath = [this.localPath.line];
     this.layers.mppi = [this.mppi.line]; this.layers.trail = [this.trail.line];
     this.localPath.line.visible = false;
@@ -276,6 +279,7 @@ export class View {
     this.pointScale = v / 4;
     this.map.mat.size = 0.04 * this.pointScale; this.scan.mat.size = 0.05 * this.pointScale;
     this.obst.mat.size = 0.07 * this.pointScale; this.chassis.mat.size = 0.07 * this.pointScale;
+    this.dynamic.mat.size = 0.08 * this.pointScale; this.person.mat.size = 0.09 * this.pointScale;
   }
 
   // ---- camera ----------------------------------------------------------------------------

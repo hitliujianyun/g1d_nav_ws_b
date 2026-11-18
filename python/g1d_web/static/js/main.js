@@ -58,6 +58,8 @@ const net = new Net({
       case KIND.MAP_RESET: view.map.reset(); break;
       case KIND.OBST: view.obst.set(new Float32Array(buf.slice(off, off + h.n * 12))); break;
       case KIND.CHASSIS: view.chassis.set(new Float32Array(buf.slice(off, off + h.n * 12))); break;
+      case KIND.DYNAMIC: view.dynamic.set(new Float32Array(buf.slice(off, off + h.n * 12))); break;
+      case KIND.PERSON: view.person.set(new Float32Array(buf.slice(off, off + h.n * 12))); break;
       case KIND.LOCAL: view.local.set(h, new Uint8Array(buf, off, h.width * h.height)); break;
       case KIND.GLOBAL: view.global.set(h, new Uint8Array(buf, off, h.width * h.height)); break;
       default: break;
@@ -338,8 +340,13 @@ function renderMap(m) {
     ['点数', `${m.points}${m.full ? '（已达上限）' : ''}`], ['帧数', m.frames], ['体素', `${m.voxel} m`],
     ['轨迹点', m.trajectory], ['坐标对齐', m.T_valid ? 'T_odom_lio 正常' : '等待 T_odom_lio', m.T_valid ? 'ok' : 'warn'],
     ['累积', m.paused ? `暂停：${m.paused}` : '进行中', m.paused ? 'warn' : 'ok'],
+    ['关键帧', m.recording && m.recording.active ? `记录中 ${m.recording.frames} 帧` : '未记录',
+      m.recording && m.recording.active ? 'ok' : ''],
+    ['导出清理', m.dufomap ? 'DUFOMap' : '射线清除（未安装 dufomap）'],
   ]);
+  if (m.recording) $('mapRecord').checked = !!m.recording.active;
 }
+$('mapRecord').onchange = () => send({ type: 'map', action: 'record', on: $('mapRecord').checked });
 $('btnMapReset').onclick = () => { if (confirm('清空本次累积的地图？')) send({ type: 'map', action: 'reset', voxel: Number($('mapVoxel').value) }); };
 $('mapPause').onchange = () => send({ type: 'map', action: 'pause', paused: $('mapPause').checked });
 $('mapColor').onchange = () => view.map.recolor($('mapColor').value);

@@ -1,7 +1,8 @@
 // WebSocket link to g1d_web: JSON text messages + binary frames
 // [u8 kind][3 reserved][u32 LE header length][header JSON][payload, 4-byte aligned].
 
-export const KIND = { SCAN: 1, MAP: 2, MAP_RESET: 3, OBST: 4, CHASSIS: 5, LOCAL: 6, GLOBAL: 7 };
+export const KIND = { SCAN: 1, MAP: 2, MAP_RESET: 3, OBST: 4, CHASSIS: 5, LOCAL: 6, GLOBAL: 7,
+  DYNAMIC: 8, PERSON: 9 };
 
 export class Net {
   constructor({ onJson, onBinary, onOpen, onClose }) {

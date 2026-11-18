@@ -2,10 +2,18 @@
 
 Exports (maps/<time>/): map.pcd (binary float32 xyz), grid.png + grid.yaml (ROS map_server format,
 occupied = map points between grid_z_min and grid_z_max), trajectory.csv, costmap.png (last global
-costmap, if any), meta.json.
+costmap, if any), meta.json. With recorded keyframes the export also writes map_raw.pcd (before
+cleaning) and map.pcd / grid.png come from the cleaned map (DUFOMap, or free-space carving when
+the dufomap package is missing).
+
+Keyframes (recordings/<session>/frames/NNNNNN.pcd): one LiDAR scan in odom with the sensor pose in
+VIEWPOINT (x y z qw qx qy qz) and the M-detector label in the intensity field -- the layout of the
+KTH DynamicMap benchmark / DUFOMap tools, so the same files feed offline cleaning on the 5090
+and scene-flow pseudo-labelling.
 """
 from __future__ import annotations
 
+import collections
 import json
 import math
 import os
@@ -193,19 +201,272 @@ def costmap_image(width: int, height: int, data: np.ndarray) -> np.ndarray:
     return np.flipud(img)
 
 
+# ------------------------------------------------------------------------------------ keyframes
+def write_pcd_frame(path: str, pts: np.ndarray, labels: Optional[np.ndarray],
+                    origin: Sequence[float], quat_wxyz: Sequence[float]) -> None:
+    pts = np.asarray(pts, dtype="<f4").reshape(-1, 3)
+    n = pts.shape[0]
+    data = np.empty((n, 4), "<f4")
+    data[:, :3] = pts
+    data[:, 3] = 0.0 if labels is None else np.asarray(labels, np.float32).reshape(-1)
+    vp = " ".join(f"{v:.6f}" for v in (*origin, *quat_wxyz))
+    header = ("# .PCD v0.7 - Point Cloud Data file format\nVERSION 0.7\nFIELDS x y z intensity\n"
+              f"SIZE 4 4 4 4\nTYPE F F F F\nCOUNT 1 1 1 1\nWIDTH {n}\nHEIGHT 1\nVIEWPOINT {vp}\n"
+              f"POINTS {n}\nDATA binary\n")
+    with open(path, "wb") as f:
+        f.write(header.encode("ascii"))
+        f.write(np.ascontiguousarray(data).tobytes())
+
+
+def read_pcd_frame(path: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """(points (N, 3), labels (N,), origin (3,), quat_wxyz (4,)) of a write_pcd_frame file."""
+    with open(path, "rb") as f:
+        data = f.read()
+    end = data.index(b"DATA binary\n") + len(b"DATA binary\n")
+    head = {ln.split()[0]: ln.split()[1:] for ln in data[:end].decode().splitlines()
+            if ln and not ln.startswith("#")}
+    n = int(head["POINTS"][0])
+    nf = len(head["FIELDS"])
+    arr = np.frombuffer(data[end:end + 4 * nf * n], dtype="<f4").reshape(n, nf)
+    vp = np.asarray([float(v) for v in head.get("VIEWPOINT", [0, 0, 0, 1, 0, 0, 0])])
+    labels = arr[:, 3] if nf > 3 else np.zeros(n, np.float32)
+    return np.ascontiguousarray(arr[:, :3]), labels, vp[:3], vp[3:7]
+
+
+class KeyframeRecorder:
+    """Writes a LiDAR keyframe whenever the sensor moved `min_dist` / turned `min_yaw` or
+    `max_dt` passed (min_dt = 0 and min_dist = 0 records every scan, e.g. for scene flow)."""
+
+    def __init__(self, root: str, min_dist: float = 0.3, min_yaw: float = 0.3,
+                 min_dt: float = 0.5, max_dt: float = 5.0, voxel: float = 0.05,
+                 max_frames: int = 4000):
+        self.root = root
+        self.min_dist, self.min_yaw = float(min_dist), float(min_yaw)
+        self.min_dt, self.max_dt = float(min_dt), float(max_dt)
+        self.voxel, self.max_frames = float(voxel), int(max_frames)
+        self.lock = threading.Lock()
+        self.dir: Optional[str] = None
+        self.frames = 0
+        self._last: Optional[Tuple[float, np.ndarray, np.ndarray]] = None
+
+    def start(self, name: Optional[str] = None) -> str:
+        with self.lock:
+            name = name or time.strftime("%Y%m%d-%H%M%S")
+            self.dir = os.path.join(self.root, name)
+            os.makedirs(os.path.join(self.dir, "frames"), exist_ok=True)
+            self.frames = 0
+            self._last = None
+            with open(os.path.join(self.dir, "poses.csv"), "w", encoding="utf-8") as f:
+                f.write("index,t,x,y,z,qw,qx,qy,qz,points,dynamic\n")
+            return self.dir
+
+    def stop(self) -> None:
+        with self.lock:
+            self.dir = None
+
+    @property
+    def active(self) -> bool:
+        return self.dir is not None
+
+    def _due(self, t: float, origin: np.ndarray, q: np.ndarray) -> bool:
+        if self._last is None:
+            return True
+        lt, lo, lq = self._last
+        dt = t - lt
+        if dt < self.min_dt:
+            return False
+        if dt >= self.max_dt:
+            return True
+        turn = 2.0 * math.acos(min(1.0, abs(float(np.dot(q, lq)))))
+        return float(np.linalg.norm(origin - lo)) >= self.min_dist or turn >= self.min_yaw
+
+    def add(self, t: float, static: np.ndarray, dynamic: np.ndarray, origin: np.ndarray,
+            quat_wxyz: np.ndarray) -> bool:
+        origin = np.asarray(origin, np.float64)
+        q = np.asarray(quat_wxyz, np.float64)
+        with self.lock:
+            if self.dir is None or self.frames >= self.max_frames or not self._due(t, origin, q):
+                return False
+            # Moving points first: voxel de-duplication keeps the first point, so a voxel with
+            # both keeps the moving label (positives for training).
+            pts = np.vstack([np.asarray(dynamic, np.float32).reshape(-1, 3),
+                             np.asarray(static, np.float32).reshape(-1, 3)])
+            labels = np.concatenate([np.ones(len(dynamic), np.float32),
+                                     np.zeros(len(static), np.float32)])
+            if self.voxel > 0 and pts.shape[0]:
+                _, idx = np.unique(voxel_keys(pts, self.voxel), return_index=True)
+                pts, labels = pts[idx], labels[idx]
+            path = os.path.join(self.dir, "frames", f"{self.frames:06d}.pcd")
+            write_pcd_frame(path + ".tmp", pts, labels, origin, q)
+            os.replace(path + ".tmp", path)   # exports list only complete frames
+            with open(os.path.join(self.dir, "poses.csv"), "a", encoding="utf-8") as f:
+                f.write(f"{self.frames},{t:.6f},{origin[0]:.4f},{origin[1]:.4f},{origin[2]:.4f},"
+                        f"{q[0]:.6f},{q[1]:.6f},{q[2]:.6f},{q[3]:.6f},{pts.shape[0]},"
+                        f"{int(labels.sum())}\n")
+            self.frames += 1
+            self._last = (t, origin, q)
+            return True
+
+    def stats(self) -> Dict:
+        with self.lock:
+            return {"active": self.dir is not None, "dir": self.dir, "frames": self.frames}
+
+
+def list_frames(session_dir: str) -> List[str]:
+    d = os.path.join(session_dir, "frames")
+    if not os.path.isdir(d):
+        return []
+    return [os.path.join(d, f) for f in sorted(os.listdir(d)) if f.endswith(".pcd")]
+
+
+# ---------------------------------------------------------------------------------- map cleaning
+def dufomap_available() -> bool:
+    try:
+        import dufomap  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def clean_map(map_pts: np.ndarray, frame_files: Sequence[str], *, resolution: float = 0.1,
+              d_s: float = 0.2, d_p: int = 1, method: str = "auto", isolate: bool = True,
+              carve_rays: int = 4000, carve_min_free: int = 2,
+              timeout_s: float = 900.0) -> Tuple[np.ndarray, Dict]:
+    """Labels map points left by moving objects from the recorded keyframes.
+
+    Returns (keep mask over map_pts, info). DUFOMap (Duberg et al., RA-L 2024) marks voxels that
+    some scan saw through as void; points inside void voxels are dropped. d_p = 1 instead of the
+    paper's 2: at Mid-360 point density d_p = 2 leaves most moving-object voxels "unknown"
+    (13 % vs 95 % recall on a synthetic crossing box). The fallback carves free space along
+    sampled rays (coarser; used only without the dufomap package).
+
+    With `isolate` DUFOMap runs in a child process (g1d_web.mapclean): inside the g1d_web
+    process, next to CycloneDDS, it crashed with an access violation on Windows. If the child
+    fails the carving fallback runs in-process."""
+    map_pts = np.asarray(map_pts, np.float32).reshape(-1, 3)
+    info: Dict = {"frames": len(frame_files), "map_points": int(map_pts.shape[0])}
+    if map_pts.shape[0] == 0 or not frame_files:
+        info["method"] = "none"
+        return np.ones(map_pts.shape[0], bool), info
+    use_dufo = method == "dufomap" or (method == "auto" and dufomap_available())
+    t0 = time.time()
+    if use_dufo and isolate:
+        keep, child = _clean_in_child(map_pts, frame_files, resolution, d_s, d_p, timeout_s)
+        if keep is not None:
+            info.update(child)
+            info["isolated"] = True
+            return keep, info
+        info["fallback_reason"] = child.get("error", "child failed")
+        use_dufo = False
+    if use_dufo:
+        import dufomap
+        m = dufomap.dufomap(float(resolution), float(d_s), int(d_p), num_threads=0)
+        for path in frame_files:
+            pts, _, origin, q = read_pcd_frame(path)
+            if pts.shape[0]:
+                m.run(pts, [float(v) for v in (*origin, *q)], cloud_transform=False)
+        m.oncePropagateCluster(if_propagate=True, if_cluster=False)
+        labels = m.segment(map_pts, [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0], cloud_transform=False)
+        keep = np.asarray(labels).reshape(-1) == 0
+        info["method"] = "dufomap"
+    else:
+        keep = _carve(map_pts, frame_files, resolution, carve_rays, carve_min_free)
+        info["method"] = "carving"
+    info.update({"removed": int((~keep).sum()), "seconds": round(time.time() - t0, 2),
+                 "resolution": resolution, "d_s": d_s, "d_p": d_p})
+    return keep, info
+
+
+def _clean_in_child(map_pts: np.ndarray, frame_files: Sequence[str], res: float, d_s: float,
+                    d_p: int, timeout_s: float) -> Tuple[Optional[np.ndarray], Dict]:
+    import subprocess
+    import sys
+    import tempfile
+    session = os.path.dirname(os.path.dirname(frame_files[0]))
+    with tempfile.TemporaryDirectory() as tmp:
+        src = os.path.join(tmp, "map.pcd")
+        dst = os.path.join(tmp, "keep.npy")
+        write_pcd(src, map_pts)
+        pkg_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        env = dict(os.environ, PYTHONPATH=pkg_root + os.pathsep + os.environ.get("PYTHONPATH", ""))
+        cmd = [sys.executable, "-m", "g1d_web.mapclean", "--frames", session, "--map", src,
+               "--out", dst, "--mask", "--method", "dufomap", "--resolution", str(res),
+               "--d-s", str(d_s), "--d-p", str(int(d_p))]
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s, env=env)
+        except subprocess.TimeoutExpired:
+            return None, {"error": f"timeout after {timeout_s:.0f} s"}
+        if r.returncode != 0 or not os.path.isfile(dst):
+            tail = (r.stderr or r.stdout or "").strip().splitlines()[-1:] or [""]
+            return None, {"error": f"exit {r.returncode}: {tail[0][:200]}"}
+        keep = np.load(dst)
+        info = {}
+        for line in reversed(r.stdout.strip().splitlines()):
+            if line.startswith("{"):
+                info = json.loads(line)
+                break
+        if keep.shape[0] != map_pts.shape[0]:
+            return None, {"error": "mask size mismatch"}
+        return keep.astype(bool), info
+
+
+def _carve(map_pts: np.ndarray, frame_files: Sequence[str], res: float, rays: int,
+           min_free: int) -> np.ndarray:
+    rng = np.random.default_rng(0)
+    free: Dict[int, int] = collections.Counter()
+    for path in frame_files:
+        pts, _, origin, _ = read_pcd_frame(path)
+        if pts.shape[0] == 0:
+            continue
+        if pts.shape[0] > rays:
+            pts = pts[rng.choice(pts.shape[0], rays, replace=False)]
+        d = pts.astype(np.float64) - origin
+        r = np.linalg.norm(d, axis=1)
+        ok = r > 4 * res
+        d, r = d[ok] / r[ok, None], r[ok]
+        # Stop short of the return: 2 voxels or 10 % of the range (grazing floor rays).
+        stop = r - np.maximum(2 * res, 0.1 * r)
+        steps = np.arange(res, float(stop.max(initial=0.0)), 0.5 * res)
+        if steps.size == 0:
+            continue
+        s = steps[None, :]
+        valid = s < stop[:, None]
+        samples = origin + d[:, None, :] * s[..., None]
+        keys = np.unique(voxel_keys(samples[valid].reshape(-1, 3), res))
+        free.update(keys.tolist())
+    if not free:
+        return np.ones(map_pts.shape[0], bool)
+    mk = voxel_keys(map_pts, res)
+    counts = np.fromiter((free.get(int(k), 0) for k in mk), np.int64, mk.shape[0])
+    return counts < min_free
+
+
 def export_map(builder: MapBuilder, root: str, *, resolution: float = 0.05,
                z_min: float = 0.10, z_max: float = 1.80, costmap: Optional[Dict] = None,
-               extra_meta: Optional[Dict] = None) -> Dict:
+               extra_meta: Optional[Dict] = None, frame_files: Sequence[str] = (),
+               clean: Optional[Dict] = None) -> Dict:
     name = time.strftime("%Y%m%d-%H%M%S")
     out = os.path.join(root, name)
     os.makedirs(out, exist_ok=True)
     pts = builder.points()
     files = []
-    write_pcd(os.path.join(out, "map.pcd"), pts)
-    files.append("map.pcd")
-    occ = builder.occupancy(resolution, z_min, z_max)
     meta = {"name": name, "created": time.time(), **builder.stats(),
             "grid_resolution": resolution, "grid_z": [z_min, z_max], "frame": "odom"}
+    occ_builder = builder
+    if frame_files and clean is not None:
+        keep, info = clean_map(pts, frame_files, **clean)
+        meta["cleaning"] = info
+        write_pcd(os.path.join(out, "map_raw.pcd"), pts)
+        files.append("map_raw.pcd")
+        pts = np.ascontiguousarray(pts[keep])
+        occ_builder = MapBuilder(builder.voxel, max(1, pts.shape[0] + 1))
+        occ_builder.add_cloud(pts)
+        with builder.lock:
+            occ_builder.trajectory = list(builder.trajectory)
+        meta["points"] = int(pts.shape[0])
+    write_pcd(os.path.join(out, "map.pcd"), pts)
+    files.append("map.pcd")
+    occ = occ_builder.occupancy(resolution, z_min, z_max)
     if occ is not None:
         img, origin = occ
         write_png_gray(os.path.join(out, "grid.png"), img)

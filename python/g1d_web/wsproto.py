@@ -122,12 +122,15 @@ class WebSocket:
     async def close(self) -> None:
         if self.closed:
             return
+        self.closed = True
         try:
             self.writer.write(encode_frame(OP_CLOSE, struct.pack("!H", 1000)))
-            await self.writer.drain()
+            # A peer that stopped reading must not keep the session (and shutdown) waiting.
+            await asyncio.wait_for(self.writer.drain(), 1.0)
         except Exception:  # noqa: BLE001
-            pass
-        self.closed = True
+            t = self.writer.transport
+            if t is not None:
+                t.abort()
         try:
             self.writer.close()
         except Exception:  # noqa: BLE001

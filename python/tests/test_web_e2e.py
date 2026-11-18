@@ -131,8 +131,10 @@ def test_web_full_loop(stack):
             for _ in range(15):
                 await c.send({"type": "teleop", "v": 0.0, "w": 0.4})
                 await asyncio.sleep(0.1)
-            st = await wait_for(c, lambda m: m["type"] == "state", 2)
-            assert st["guard"]["source"] == "teleop" and st["guard"]["manual_source"] == "web"
+            # States queued while sending may predate the guard switching: wait for the switch.
+            st = await wait_for(c, lambda m: m["type"] == "state"
+                                and (m["guard"] or {}).get("source") == "teleop", 3)
+            assert st["guard"]["manual_source"] == "web"
 
             # 6. e-stop from a read-only client; release needs control
             await viewer.send({"type": "estop", "on": True})

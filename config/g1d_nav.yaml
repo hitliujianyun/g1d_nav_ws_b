@@ -242,6 +242,21 @@ web:                               # g1d_web debug / control UI
   maps_dir: maps
   missions_dir: missions
   tests_dir: logs/tests
+  recordings_dir: recordings       # LiDAR keyframes (KTH/DUFOMap PCD layout)
+  keyframes:
+    enabled: true                  # record while the map accumulates (offline cleaning, training)
+    min_dist: 0.3                  # m between keyframes ...
+    min_yaw: 0.3                   # ... or rad of rotation
+    min_dt: 0.5                    # s; 0 with min_dist 0 records every scan (scene-flow data)
+    max_dt: 5.0
+    voxel: 0.05
+    max_frames: 4000
+  cleaning:                        # applied at map export when keyframes exist
+    enabled: true
+    method: auto                   # auto (DUFOMap in a child process if installed) | dufomap | carving
+    resolution: 0.1
+    d_s: 0.2
+    d_p: 1
 
 debug:
   publish_costmap: true            # rt/nav/local_costmap (OccupancyGrid_, 2 Hz)

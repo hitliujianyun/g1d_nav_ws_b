@@ -23,6 +23,7 @@ TOPICS = {
     "obstacles": "rt/nav/obstacle_points", "chassis": "rt/nav/chassis_scan",
     "local_costmap": "rt/nav/local_costmap", "global_costmap": "rt/nav/global_costmap",
     "lio_odom": "rt/nav/lio_odom", "cmd_vel": "rt/nav/cmd_vel", "cmd_out": "rt/cmd_vel_no_limit",
+    "person": "rt/nav/person_points",
 }
 POSE_FRESH_S = 1.0
 
@@ -32,6 +33,24 @@ def quat_to_matrix(q) -> np.ndarray:
     return np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
                      [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
                      [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+
+
+def matrix_to_quat_wxyz(r: np.ndarray) -> np.ndarray:
+    tr = r[0, 0] + r[1, 1] + r[2, 2]
+    if tr > 0:
+        s = math.sqrt(tr + 1.0) * 2
+        q = [0.25 * s, (r[2, 1] - r[1, 2]) / s, (r[0, 2] - r[2, 0]) / s, (r[1, 0] - r[0, 1]) / s]
+    elif r[0, 0] > r[1, 1] and r[0, 0] > r[2, 2]:
+        s = math.sqrt(1.0 + r[0, 0] - r[1, 1] - r[2, 2]) * 2
+        q = [(r[2, 1] - r[1, 2]) / s, 0.25 * s, (r[0, 1] + r[1, 0]) / s, (r[0, 2] + r[2, 0]) / s]
+    elif r[1, 1] > r[2, 2]:
+        s = math.sqrt(1.0 + r[1, 1] - r[0, 0] - r[2, 2]) * 2
+        q = [(r[0, 2] - r[2, 0]) / s, (r[0, 1] + r[1, 0]) / s, 0.25 * s, (r[1, 2] + r[2, 1]) / s]
+    else:
+        s = math.sqrt(1.0 + r[2, 2] - r[0, 0] - r[1, 1]) * 2
+        q = [(r[1, 0] - r[0, 1]) / s, (r[0, 2] + r[2, 0]) / s, (r[1, 2] + r[2, 1]) / s, 0.25 * s]
+    q = np.asarray(q, np.float64)
+    return q / np.linalg.norm(q)
 
 
 def base_to_odom(pts: np.ndarray, pose: Tuple[float, float, float]) -> np.ndarray:
@@ -77,7 +96,11 @@ class Hub:
         self.clouds: Dict[str, Tuple[float, np.ndarray]] = {}
         self.grids: Dict[str, Dict[str, Any]] = {}
         self.cmd: Dict[str, Tuple[float, float]] = {}
+        # listeners: cb(stamp, static_lio (N, 3), dynamic_lio (M, 3)) for rt/nav/registered_cloud
         self.cloud_listeners = []
+        self.lio_poses: Deque[Tuple[float, np.ndarray, np.ndarray]] = collections.deque(maxlen=64)
+        self.R_imu_lidar = np.eye(3)
+        self.t_imu_lidar = np.zeros(3)
         self._subs = []
         self._pubs: Dict[str, Any] = {}
 
@@ -99,8 +122,8 @@ class Hub:
         sub("param_state", String_, self._on_param_state, 8)
         sub("base_odom", Odometry_, self._on_odom, 8)
         sub("wheel_odom", Odometry_, self._on_odom, 8)
-        sub("lio_odom", Odometry_, lambda k, m: None, 8)
-        for key in ("cloud", "obstacles", "chassis"):
+        sub("lio_odom", Odometry_, self._on_lio_odom, 16)
+        for key in ("cloud", "obstacles", "chassis", "person"):
             sub(key, PointCloud2_, self._on_cloud, 2)
         for key in ("local_costmap", "global_costmap"):
             sub(key, OccupancyGrid_, self._on_grid, 1)
@@ -145,12 +168,23 @@ class Hub:
         else:
             self.pose_wheel = rec
 
+    def _on_lio_odom(self, key: str, m) -> None:
+        p = m.pose.pose
+        self.lio_poses.append((msgs.to_sec(m.header.stamp),
+                               np.array([p.position.x, p.position.y, p.position.z]),
+                               np.array([p.orientation.x, p.orientation.y, p.orientation.z,
+                                         p.orientation.w])))
+
     def _on_cloud(self, key: str, m) -> None:
-        pts = msgs.read_cloud_xyz(m)
-        self.clouds[key] = (msgs.to_sec(m.header.stamp), pts)
-        if key == "cloud":
-            for cb in list(self.cloud_listeners):
-                cb(pts)
+        stamp = msgs.to_sec(m.header.stamp)
+        if key != "cloud":
+            self.clouds[key] = (stamp, msgs.read_cloud_xyz(m))
+            return
+        static, dynamic = msgs.read_cloud_xyzl(m)
+        self.clouds["cloud"] = (stamp, static)
+        self.clouds["dynamic"] = (stamp, dynamic)
+        for cb in list(self.cloud_listeners):
+            cb(stamp, static, dynamic)
 
     def _on_grid(self, key: str, m) -> None:
         info = m.info
@@ -191,6 +225,20 @@ class Hub:
         if d.get("valid"):
             return quat_to_matrix(d["q"]), np.asarray(d["t"], np.float64), True
         return np.eye(3), np.zeros(3), False
+
+    def sensor_pose_odom(self, stamp: float) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        """LiDAR origin and orientation (quaternion w, x, y, z) in odom for the scan at `stamp`
+        (rt/nav/lio_odom of the same scan + T_odom_lio + LiDAR extrinsic); None if unknown."""
+        r_ol, t_ol, valid = self.T_odom_lio()
+        if not valid:
+            return None
+        for t, pos, q in reversed(self.lio_poses):
+            if abs(t - stamp) < 1e-3:
+                r_li = quat_to_matrix(q)
+                r = r_ol @ r_li @ self.R_imu_lidar
+                origin = r_ol @ (r_li @ self.t_imu_lidar + pos) + t_ol
+                return origin, matrix_to_quat_wxyz(r)
+        return None
 
     def cloud_in_odom(self, pts: np.ndarray) -> np.ndarray:
         r, t, _ = self.T_odom_lio()
