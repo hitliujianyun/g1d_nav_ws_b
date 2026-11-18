@@ -1,5 +1,8 @@
 // g1d_lio: Mid-360S -> FAST-LIO2 -> rt/nav/lio_odom, rt/nav/registered_cloud, rt/nav/lio_health
 //          (+ rt/nav/livox_cloud in the LiDAR frame when debug.publish_lidar_cloud is set).
+// registered_cloud carries a float32 "dynamic" field (1 = labelled moving by M-detector when
+// lio.dynamic.enabled). Subscribes rt/nav/map_delete (JSON {"boxes": [[x0,x1,y0,y1,z0,z1], ...]}
+// in odom_lio) to remove late-confirmed moving objects from the estimator map.
 //
 // lidar.source = livox_sdk2   : direct Livox-SDK2 connection (build with G1D_WITH_LIVOX=ON)
 // lidar.source = unitree_topic: rt/utlidar/cloud_livox_mid360 + rt/utlidar/imu_livox_mid360
@@ -112,6 +115,10 @@ int main(int argc, char ** argv)
     };
 
   lio::LioEstimator est(lio::LioConfig::fromYaml(cfg));
+  bus::Mailbox<std::string> delete_box(16);
+  auto delete_sub = bus::subscribe<bus::String>("rt/nav/map_delete",
+      [&](const bus::String & m) {delete_box.put(m.data());}, 16);
+  long map_deleted = 0;
   std::mutex agg_mutex;
   lio::FrameAggregator agg(frame_ms);
   std::atomic<long> packets{0}, imus{0};
@@ -173,6 +180,18 @@ int main(int argc, char ** argv)
   std::fprintf(stderr, "[g1d_lio] running, source=%s\n", source.c_str());
   double last_report = monoSec();
   while (g_run) {
+    for (const auto & s : delete_box.drain()) {
+      try {
+        std::vector<fast_lio_api::Box> boxes;
+        for (const auto & b : nlohmann::json::parse(s).at("boxes")) {
+          const auto v = b.get<std::vector<float>>();
+          if (v.size() == 6) {boxes.push_back({v[0], v[1], v[2], v[3], v[4], v[5]});}
+        }
+        map_deleted += est.deleteMapBoxes(boxes);
+      } catch (const std::exception & e) {
+        std::fprintf(stderr, "[g1d_lio] bad map_delete message: %s\n", e.what());
+      }
+    }
     lio::LioOutput out;
     bool any = false;
     while (est.process(&out)) {
@@ -180,7 +199,7 @@ int main(int argc, char ** argv)
       const double t = out.stamp_host;
       odom_pub->Write(bus::makeOdometry(out.T_world_imu, out.velocity_world, Eigen::Vector3d::Zero(),
         "odom_lio", "livox_imu", t));
-      cloud_pub->Write(bus::makeCloudXYZ(out.cloud_world, "odom_lio", t));
+      cloud_pub->Write(bus::makeCloudXYZL(out.cloud_world, out.cloud_dynamic, "odom_lio", t));
       nlohmann::json h;
       h["stamp"] = t;
       h["ok"] = out.health.ok;
@@ -193,6 +212,13 @@ int main(int argc, char ** argv)
       h["process_ms"] = out.stats.process_time_s * 1e3;
       h["clock_offset"] = est.clock().offset();
       h["clock_jumps"] = est.clock().jumps();
+      if (est.dynamicEnabled()) {
+        h["dynamic_points"] = out.stats.dynamic_points;
+        h["dynamic_raw"] = out.dynamic_stats.raw_dynamic;
+        h["map_skipped"] = out.stats.map_skipped_points;
+        h["label_ms"] = out.dynamic_stats.time_ms;
+        h["map_deleted"] = map_deleted;
+      }
       health_pub->Write(bus::makeString(h.dump()));
     }
     if (monoSec() - last_report > 5.0) {

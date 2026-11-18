@@ -55,6 +55,18 @@ lio:
   point_filter_num: 1
   max_range: 60.0
   publish_cloud_voxel: 0.05
+  dynamic:
+    # M-detector moving-point labels: labelled points stay out of the FAST-LIO map and mark only
+    # the short-lived dynamic costmap layer (registered_cloud field "dynamic").
+    enabled: true
+    max_points: 12000            # per-frame detector input; larger scans are sub-sampled (CPU)
+    refine_voxel: 0.15           # voxel vote replacing upstream DBSCAN (m)
+    refine_min_points: 3         # moving points needed in the 3x3x3 neighbourhood
+    refine_min_ratio: 0.4        # moving share of detected points in the voxel
+    refine_dilate: 1             # grow moving voxels into occupied neighbours
+    exclusion_voxel: 0.2         # map insertion exclusion around moving points (m)
+    map_delay_scans: 3           # hold map insertions for temporal consistency
+    m_detector: {}               # overrides by upstream dyn_obj/* name, e.g. {depth_map_dur: 0.3}
   health:
     min_effective_points: 300
     bad_frames_to_fail: 3

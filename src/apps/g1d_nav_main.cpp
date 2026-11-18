@@ -4,6 +4,8 @@
 //             rt/slamware_ros_sdk_server_node/odom, rt/hispeed_state, rt/lowstate,
 //             rt/waistpitchstate, rt/nav/goal, rt/nav/estop, rt/nav/guard_state
 //             rt/nav/param_set (JSON {"target": "nav", "name", "value", "id"})
+//             rt/nav/person_points (PointCloud2 xyz in odom_lio: late moving-object evidence)
+// registered_cloud points with dynamic = 1 mark only the short-lived dynamic costmap layer.
 // Publishes:  rt/nav/cmd_vel, rt/nav/status, rt/nav/base_odom, rt/nav/obstacle_points,
 //             rt/nav/param_state, debug: rt/nav/local_costmap, rt/nav/global_costmap,
 //             rt/nav/debug (JSON: T_odom_lio, goal, paths, MPPI trajectory)
@@ -48,6 +50,7 @@ struct CloudMsg
 {
   double stamp;
   std::vector<Eigen::Vector3f> pts;
+  std::vector<Eigen::Vector3f> dynamic;
 };
 struct WheelMsg
 {
@@ -103,8 +106,14 @@ int main(int argc, char ** argv)
   subs.push_back(subscribe<bus::PointCloud2>("rt/nav/registered_cloud", [&](const bus::PointCloud2 & m) {
       CloudMsg c;
       c.stamp = bus::toSec(m.header().stamp());
-      if (bus::readCloudXYZ(m, c.pts)) {cloud_box.put(std::move(c));}
+      if (bus::readCloudXYZL(m, c.pts, c.dynamic)) {cloud_box.put(std::move(c));}
     }));
+  bus::Mailbox<CloudMsg> person_box(8);
+  subs.push_back(subscribe<bus::PointCloud2>("rt/nav/person_points", [&](const bus::PointCloud2 & m) {
+      CloudMsg c;
+      c.stamp = bus::toSec(m.header().stamp());
+      if (bus::readCloudXYZ(m, c.pts)) {person_box.put(std::move(c));}
+    }, 8));
   subs.push_back(subscribe<bus::PointCloud2>("rt/nav/chassis_scan", [&](const bus::PointCloud2 & m) {
       CloudMsg c;
       c.stamp = nowSec();  // republished with receipt time by the guard
@@ -173,6 +182,7 @@ int main(int argc, char ** argv)
     };
 
   std::deque<LioOdomMsg> lio_hist;
+  Eigen::Vector3d last_lidar_origin_lio = Eigen::Vector3d::Zero();
   double last_obst_stamp = 0.0;
   double last_costmap_pub = 0.0;
   double last_global_costmap_pub = 0.0;
@@ -203,10 +213,19 @@ int main(int argc, char ** argv)
           in.lidar_origin_lio = (it->T * T_imu_lidar).translation();
           in.ok = lio_health_ok && std::abs(lio_health_stamp - it->stamp) < 0.5;
           in.cloud_lio = std::move(c.pts);
+          in.dynamic_lio = std::move(c.dynamic);
+          last_lidar_origin_lio = in.lidar_origin_lio;
           core.onLio(in);
           break;
         }
       }
+    }
+    for (auto & c : person_box.drain()) {
+      DynamicPointsInput in;
+      in.stamp = c.stamp;
+      in.origin_lio = last_lidar_origin_lio;
+      in.points_lio = std::move(c.pts);
+      core.onDynamicPoints(in, now);
     }
     for (auto & s : scan_box.drain()) {
       // Points are in base_link; convert to a pseudo scan around the scanner origin.

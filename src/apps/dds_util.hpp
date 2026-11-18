@@ -99,6 +99,81 @@ inline bool readCloudXYZ(const PointCloud2 & m, std::vector<Eigen::Vector3f> & o
   return true;
 }
 
+/// x, y, z, dynamic float32 cloud (point_step 16): static points get dynamic = 0, moving = 1.
+/// Readers that only look for x/y/z (readCloudXYZ, Python read_cloud_xyz) still work.
+inline PointCloud2 makeCloudXYZL(
+  const std::vector<Eigen::Vector3f> & static_pts, const std::vector<Eigen::Vector3f> & dynamic_pts,
+  const std::string & frame, double stamp)
+{
+  PointCloud2 m;
+  setStamp(m.header().stamp(), stamp);
+  m.header().frame_id(frame);
+  m.height(1);
+  const size_t n = static_pts.size() + dynamic_pts.size();
+  m.width(static_cast<uint32_t>(n));
+  const char * names[4] = {"x", "y", "z", "dynamic"};
+  for (uint32_t i = 0; i < 4; ++i) {
+    PointField f;
+    f.name(names[i]);
+    f.offset(4 * i);
+    f.datatype(7);  // FLOAT32
+    f.count(1);
+    m.fields().push_back(f);
+  }
+  m.is_bigendian(false);
+  m.point_step(16);
+  m.row_step(16 * m.width());
+  m.data().resize(16 * n);
+  size_t k = 0;
+  auto put = [&](const Eigen::Vector3f & p, float label) {
+      std::memcpy(&m.data()[16 * k], p.data(), 12);
+      std::memcpy(&m.data()[16 * k + 12], &label, 4);
+      ++k;
+    };
+  for (const auto & p : static_pts) {put(p, 0.0f);}
+  for (const auto & p : dynamic_pts) {put(p, 1.0f);}
+  m.is_dense(true);
+  return m;
+}
+
+/// Splits a cloud by its float32 "dynamic" field (> 0.5 = moving); without the field every
+/// point is static. Returns false on layout errors.
+inline bool readCloudXYZL(
+  const PointCloud2 & m, std::vector<Eigen::Vector3f> & static_out,
+  std::vector<Eigen::Vector3f> & dynamic_out)
+{
+  int ol = -1;
+  for (const auto & f : m.fields()) {
+    if (f.name() == "dynamic" && f.datatype() == 7) {ol = static_cast<int>(f.offset());}
+  }
+  std::vector<Eigen::Vector3f> all;
+  if (!readCloudXYZ(m, all)) {return false;}
+  static_out.clear();
+  dynamic_out.clear();
+  if (ol < 0) {static_out = std::move(all); return true;}
+  // readCloudXYZ drops non-finite points; re-read labels alongside the coordinates.
+  int ox = -1, oy = -1, oz = -1;
+  for (const auto & f : m.fields()) {
+    if (f.datatype() != 7) {continue;}
+    if (f.name() == "x") {ox = static_cast<int>(f.offset());}
+    if (f.name() == "y") {oy = static_cast<int>(f.offset());}
+    if (f.name() == "z") {oz = static_cast<int>(f.offset());}
+  }
+  const size_t n = m.data().size() / m.point_step();
+  const uint8_t * d = m.data().data();
+  for (size_t i = 0; i < n; ++i) {
+    float x, y, z, l;
+    const uint8_t * p = d + i * m.point_step();
+    std::memcpy(&x, p + ox, 4);
+    std::memcpy(&y, p + oy, 4);
+    std::memcpy(&z, p + oz, 4);
+    std::memcpy(&l, p + ol, 4);
+    if (!(std::isfinite(x) && std::isfinite(y) && std::isfinite(z))) {continue;}
+    (l > 0.5f ? dynamic_out : static_out).emplace_back(x, y, z);
+  }
+  return true;
+}
+
 inline Eigen::Isometry3d poseOf(const Odometry & m)
 {
   const auto & p = m.pose().pose();
