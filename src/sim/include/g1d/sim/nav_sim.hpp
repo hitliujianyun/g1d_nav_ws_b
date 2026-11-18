@@ -16,6 +16,17 @@
 namespace g1d::sim
 {
 
+/// Marks returns as moving (`dynamic[i] = 1`) given world points and the LiDAR pose at time t.
+using PointLabeler = std::function<void(
+      const World & world, const std::vector<Eigen::Vector3f> & points_world,
+      const Eigen::Isometry3d & T_world_lidar, double t, std::vector<uint8_t> & dynamic)>;
+
+/// Ground-truth labels: returns within `margin` of a box whose name starts with `prefix`.
+PointLabeler truthLabeler(std::string prefix = "ped", double margin = 0.05);
+
+/// Moves box `name` so that its footprint centre is at (x, y); returns false if absent.
+bool moveBox(World & world, const std::string & name, double x, double y);
+
 struct NavSimParams
 {
   double control_dt{0.05};
@@ -27,6 +38,7 @@ struct NavSimParams
     {0.28, 0.265}, {0.28, -0.265}, {-0.28, -0.265}, {-0.28, 0.265}};  // 557 x 525 mm chassis
   Eigen::Isometry3d T_head_livox{makeIsometry(0.05, 0.0, 0.55, M_PI, -0.04, 0.0)};
   DiffDriveModel::Params dynamics;
+  PointLabeler labeler;               // empty: every return is static
 };
 
 struct NavSimResult

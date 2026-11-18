@@ -78,6 +78,7 @@ void VoxelLayer::configure(
   bits_.resize(sx, sy, res, ox, oy, 0u);
   hits_.resize(sx, sy, res, ox, oy, 0u);
   stamp_.resize(sx, sy, res, ox, oy, 0.0f);
+  evidence_.resize(sx, sy, res, ox, oy, uint64_t{0});
 }
 
 void VoxelLayer::updateOrigin(double ox, double oy)
@@ -85,6 +86,7 @@ void VoxelLayer::updateOrigin(double ox, double oy)
   bits_.updateOrigin(ox, oy);
   hits_.updateOrigin(ox, oy);
   stamp_.updateOrigin(ox, oy);
+  evidence_.updateOrigin(ox, oy);
 }
 
 bool VoxelLayer::occupied(int mx, int my) const
@@ -130,22 +132,100 @@ void VoxelLayer::clearRay(const Eigen::Vector3d & a, const Eigen::Vector3d & b)
   }
 }
 
+void VoxelLayer::clearBit(int mx, int my, int z)
+{
+  uint32_t & col = bits_.at(mx, my);
+  col &= ~(1u << z);
+  evidence_.at(mx, my) &= ~(uint64_t{3} << (2 * z));
+  if (col == 0u) {hits_.at(mx, my) = 0;}
+}
+
+void VoxelLayer::seeThrough(
+  const std::vector<Eigen::Vector3f> & points, const std::vector<Eigen::Vector3f> * extra,
+  const Eigen::Vector3d & sensor)
+{
+  const double bin = std::max(0.2, p_.see_through_bin_deg) * M_PI / 180.0;
+  const int naz = static_cast<int>(std::ceil(2.0 * M_PI / bin));
+  const int nel = static_cast<int>(std::ceil(M_PI / bin));
+  bin_min_.assign(static_cast<size_t>(naz) * nel, std::numeric_limits<float>::infinity());
+  auto binOf = [&](const Eigen::Vector3d & d, double r) {
+      const double az = std::atan2(d.y(), d.x()) + M_PI;
+      const double el = std::asin(std::clamp(d.z() / r, -1.0, 1.0)) + M_PI / 2.0;
+      const int ia = std::min(static_cast<int>(az / bin), naz - 1);
+      const int ie = std::min(static_cast<int>(el / bin), nel - 1);
+      return static_cast<size_t>(ie) * naz + ia;
+    };
+  auto accumulate = [&](const std::vector<Eigen::Vector3f> & pts) {
+      for (const auto & pf : pts) {
+        const Eigen::Vector3d d = pf.cast<double>() - sensor;
+        const double r = d.norm();
+        if (r < 1e-3) {continue;}
+        float & m = bin_min_[binOf(d, r)];
+        m = std::min(m, static_cast<float>(r));
+      }
+    };
+  accumulate(points);
+  if (extra) {accumulate(*extra);}
+
+  const double R = p_.raytrace_max_range;
+  const double res = bits_.resolution();
+  const int frames = std::clamp(p_.see_through_frames, 1, 3);
+  int x0, y0, x1, y1;
+  bits_.worldToMap(sensor.x() - R, sensor.y() - R, x0, y0);
+  bits_.worldToMap(sensor.x() + R, sensor.y() + R, x1, y1);
+  x0 = std::max(x0, 0); y0 = std::max(y0, 0);
+  x1 = std::min(x1, static_cast<int>(bits_.sizeX()) - 1);
+  y1 = std::min(y1, static_cast<int>(bits_.sizeY()) - 1);
+  for (int y = y0; y <= y1; ++y) {
+    for (int x = x0; x <= x1; ++x) {
+      const uint32_t col = bits_.at(x, y);
+      if (col == 0u) {continue;}
+      const double cx = bits_.originX() + (x + 0.5) * res - sensor.x();
+      const double cy = bits_.originY() + (y + 0.5) * res - sensor.y();
+      if (cx * cx + cy * cy > R * R) {continue;}
+      for (int z = 0; z < nz_; ++z) {
+        if (!(col & (1u << z))) {continue;}
+        const Eigen::Vector3d d(cx, cy, p_.z_min + (z + 0.5) * p_.z_resolution - sensor.z());
+        const double r = d.norm();
+        if (r < p_.blind_radius || r > R) {continue;}
+        const float m = bin_min_[binOf(d, r)];
+        if (!std::isfinite(m) || r > m - p_.see_through_margin) {continue;}
+        uint64_t & ev = evidence_.at(x, y);
+        const int cnt = static_cast<int>((ev >> (2 * z)) & 3u) + 1;
+        if (cnt >= frames) {
+          clearBit(x, y, z);
+          ++see_through_cleared_;
+        } else {
+          ev = (ev & ~(uint64_t{3} << (2 * z))) | (static_cast<uint64_t>(cnt) << (2 * z));
+        }
+      }
+    }
+  }
+}
+
 void VoxelLayer::addCloud(
-  const std::vector<Eigen::Vector3f> & points_odom, const Eigen::Vector3d & sensor, double stamp)
+  const std::vector<Eigen::Vector3f> & points_odom, const Eigen::Vector3d & sensor, double stamp,
+  const std::vector<Eigen::Vector3f> * extra_returns)
 {
   if (!has_t0_) {t0_ = stamp; has_t0_ = true;}
   const float ts = static_cast<float>(stamp - t0_);
   const double mark2 = p_.obstacle_max_range * p_.obstacle_max_range;
   const int every = std::max(1, p_.clear_every_n);
   // Clear first, then mark, so points of this scan are never erased by its own rays.
-  for (size_t i = 0; i < points_odom.size(); i += every) {
-    const Eigen::Vector3d q = points_odom[i].cast<double>();
-    Eigen::Vector3d d = q - sensor;
-    const double n = d.norm();
-    if (n < 1e-3) {continue;}
-    const Eigen::Vector3d end = n > p_.raytrace_max_range ? sensor + d * (p_.raytrace_max_range / n) : q;
-    clearRay(sensor, end);
-  }
+  auto rays = [&](const std::vector<Eigen::Vector3f> & pts) {
+      for (size_t i = 0; i < pts.size(); i += every) {
+        const Eigen::Vector3d q = pts[i].cast<double>();
+        Eigen::Vector3d d = q - sensor;
+        const double n = d.norm();
+        if (n < 1e-3) {continue;}
+        const Eigen::Vector3d end =
+          n > p_.raytrace_max_range ? sensor + d * (p_.raytrace_max_range / n) : q;
+        clearRay(sensor, end);
+      }
+    };
+  rays(points_odom);
+  if (extra_returns) {rays(*extra_returns);}
+  if (p_.see_through_clear) {seeThrough(points_odom, extra_returns, sensor);}
   for (const auto & pf : points_odom) {
     const Eigen::Vector3d q = pf.cast<double>();
     if (q.z() < p_.z_min || q.z() >= p_.z_max) {continue;}
@@ -155,10 +235,39 @@ void VoxelLayer::addCloud(
     const int z = static_cast<int>(std::floor((q.z() - p_.z_min) / p_.z_resolution));
     if (z < 0 || z >= nz_) {continue;}
     bits_.at(mx, my) |= (1u << z);
+    evidence_.at(mx, my) &= ~(uint64_t{3} << (2 * z));
     uint16_t & h = hits_.at(mx, my);
     if (h < 0xFFFF) {++h;}
     stamp_.at(mx, my) = ts;
   }
+}
+
+void VoxelLayer::clearAround(const std::vector<Eigen::Vector3f> & points_odom, double radius)
+{
+  const double res = bits_.resolution();
+  const int rc = std::max(0, static_cast<int>(std::ceil(radius / res - 1e-9)));
+  for (const auto & pf : points_odom) {
+    if (pf.z() < p_.z_min - p_.z_resolution || pf.z() >= p_.z_max + p_.z_resolution) {continue;}
+    int mx, my;
+    bits_.worldToMap(pf.x(), pf.y(), mx, my);
+    const int zc = static_cast<int>(std::floor((pf.z() - p_.z_min) / p_.z_resolution));
+    for (int dy = -rc; dy <= rc; ++dy) {
+      for (int dx = -rc; dx <= rc; ++dx) {
+        if (dx * dx + dy * dy > rc * rc || !bits_.inBounds(mx + dx, my + dy)) {continue;}
+        for (int z = std::max(0, zc - 1); z <= std::min(nz_ - 1, zc + 1); ++z) {
+          if (bits_.at(mx + dx, my + dy) & (1u << z)) {clearBit(mx + dx, my + dy, z);}
+        }
+      }
+    }
+  }
+}
+
+bool VoxelLayer::voxelOccupied(double x, double y, double z) const
+{
+  int mx, my;
+  if (!bits_.worldToMap(x, y, mx, my)) {return false;}
+  const int iz = static_cast<int>(std::floor((z - p_.z_min) / p_.z_resolution));
+  return iz >= 0 && iz < nz_ && (bits_.at(mx, my) & (1u << iz));
 }
 
 void VoxelLayer::clearPolygon(const std::vector<Eigen::Vector2d> & poly)
@@ -190,6 +299,58 @@ void VoxelLayer::writeTo(nav2_costmap_2d::Costmap2D & master) const
   for (unsigned y = 0; y < sy; ++y) {
     for (unsigned x = 0; x < sx; ++x) {
       if (occupied(static_cast<int>(x), static_cast<int>(y))) {
+        master.setCost(x, y, LETHAL_OBSTACLE);
+      }
+    }
+  }
+}
+
+// ----------------------------------------------------------------------------- DynamicLayer
+void DynamicLayer::configure(
+  const DynamicLayerParams & p, unsigned sx, unsigned sy, double res, double ox, double oy)
+{
+  p_ = p;
+  seen_.resize(sx, sy, res, ox, oy, -1.0f);
+}
+
+void DynamicLayer::addPoints(
+  const std::vector<Eigen::Vector3f> & points_odom, const Eigen::Vector3d & origin, double stamp)
+{
+  if (!p_.enabled) {return;}
+  if (!has_t0_) {t0_ = stamp; has_t0_ = true;}
+  const float ts = static_cast<float>(stamp - t0_);
+  const double r2 = p_.max_range * p_.max_range;
+  for (const auto & pf : points_odom) {
+    if (pf.z() < p_.z_min || pf.z() >= p_.z_max) {continue;}
+    const double dx = pf.x() - origin.x(), dy = pf.y() - origin.y();
+    if (dx * dx + dy * dy > r2) {continue;}
+    int mx, my;
+    if (!seen_.worldToMap(pf.x(), pf.y(), mx, my)) {continue;}
+    float & s = seen_.at(mx, my);
+    s = std::max(s, ts);
+  }
+}
+
+void DynamicLayer::clearPolygon(const std::vector<Eigen::Vector2d> & poly)
+{
+  forCellsInPolygon(seen_, poly, [&](int x, int y) {seen_.at(x, y) = -1.0f;});
+}
+
+bool DynamicLayer::active(int mx, int my, double now) const
+{
+  if (!p_.enabled || !has_t0_ || !seen_.inBounds(mx, my)) {return false;}
+  const float s = seen_.at(mx, my);
+  return s >= 0.0f && (now - t0_) - s <= p_.ttl_s;
+}
+
+void DynamicLayer::writeTo(nav2_costmap_2d::Costmap2D & master, double now) const
+{
+  if (!p_.enabled || !has_t0_) {return;}
+  const unsigned sx = std::min(master.getSizeInCellsX(), seen_.sizeX());
+  const unsigned sy = std::min(master.getSizeInCellsY(), seen_.sizeY());
+  for (unsigned y = 0; y < sy; ++y) {
+    for (unsigned x = 0; x < sx; ++x) {
+      if (active(static_cast<int>(x), static_cast<int>(y), now)) {
         master.setCost(x, y, LETHAL_OBSTACLE);
       }
     }

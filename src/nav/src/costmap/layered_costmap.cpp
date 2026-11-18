@@ -40,6 +40,16 @@ LayeredCostmapParams LayeredCostmapParams::fromYaml(const YAML::Node & root, con
   p.voxel.decay_s = pick("voxel.decay_s", p.voxel.decay_s);
   p.voxel.clear_every_n = pick("voxel.clear_every_n", p.voxel.clear_every_n);
   p.voxel.min_points_per_column = pick("voxel.min_points_per_column", p.voxel.min_points_per_column);
+  p.voxel.see_through_clear = pick("voxel.see_through_clear", p.voxel.see_through_clear);
+  p.voxel.see_through_bin_deg = pick("voxel.see_through_bin_deg", p.voxel.see_through_bin_deg);
+  p.voxel.see_through_margin = pick("voxel.see_through_margin", p.voxel.see_through_margin);
+  p.voxel.see_through_frames = pick("voxel.see_through_frames", p.voxel.see_through_frames);
+  p.voxel.blind_radius = pick("voxel.blind_radius", p.voxel.blind_radius);
+  p.dynamic.enabled = pick("dynamic.enabled", p.dynamic.enabled);
+  p.dynamic.ttl_s = pick("dynamic.ttl_s", p.dynamic.ttl_s);
+  p.dynamic.max_range = pick("dynamic.max_range", p.dynamic.max_range);
+  p.dynamic.z_min = p.voxel.z_min;
+  p.dynamic.z_max = p.voxel.z_max;
   p.scan.obstacle_max_range = pick("scan.obstacle_max_range", p.scan.obstacle_max_range);
   p.scan.raytrace_max_range = pick("scan.raytrace_max_range", p.scan.raytrace_max_range);
   p.scan.inf_is_valid = pick("scan.inf_is_valid", p.scan.inf_is_valid);
@@ -75,6 +85,7 @@ LayeredCostmap::LayeredCostmap(const LayeredCostmapParams & p)
   ros_ = std::make_shared<nav2_costmap_2d::Costmap2DROS>(layered_, "odom", "base_link");
 
   voxel_.configure(p.voxel, sx, sy, p.resolution, master_.getOriginX(), master_.getOriginY());
+  dynamic_.configure(p.dynamic, sx, sy, p.resolution, master_.getOriginX(), master_.getOriginY());
   scan_.configure(p.scan, sx, sy, p.resolution, master_.getOriginX(), master_.getOriginY());
 }
 
@@ -98,9 +109,20 @@ std::vector<Eigen::Vector2d> LayeredCostmap::footprintAt(const Pose2D & pose) co
 }
 
 void LayeredCostmap::addCloud(
-  const std::vector<Eigen::Vector3f> & points, const Eigen::Vector3d & sensor, double stamp)
+  const std::vector<Eigen::Vector3f> & points, const Eigen::Vector3d & sensor, double stamp,
+  const std::vector<Eigen::Vector3f> * dynamic)
 {
-  if (p_.use_voxel) {voxel_.addCloud(points, sensor, stamp);}
+  if (p_.use_voxel) {voxel_.addCloud(points, sensor, stamp, dynamic);}
+  if (dynamic && !dynamic->empty()) {dynamic_.addPoints(*dynamic, sensor, stamp);}
+}
+
+void LayeredCostmap::addDynamicPoints(
+  const std::vector<Eigen::Vector3f> & points, const Eigen::Vector3d & origin, double stamp,
+  double clear_radius)
+{
+  if (points.empty()) {return;}
+  if (p_.use_voxel) {voxel_.clearAround(points, clear_radius);}
+  dynamic_.addPoints(points, origin, stamp);
 }
 
 void LayeredCostmap::addScan(const ScanData & scan, const Pose2D & scanner)
@@ -121,16 +143,19 @@ void LayeredCostmap::update(const Pose2D & robot, double now)
   if (p_.rolling) {
     master_.updateOrigin(robot.x - 0.5 * p_.size_x, robot.y - 0.5 * p_.size_y);
     voxel_.updateOrigin(master_.getOriginX(), master_.getOriginY());
+    dynamic_.updateOrigin(master_.getOriginX(), master_.getOriginY());
     scan_.updateOrigin(master_.getOriginX(), master_.getOriginY());
   }
   voxel_.decay(now);
   if (p_.clear_footprint) {
     const auto fp = footprintAt(robot);
     voxel_.clearPolygon(fp);
+    dynamic_.clearPolygon(fp);
     scan_.clearPolygon(fp);
   }
   master_.resetMap(0, 0, master_.getSizeInCellsX(), master_.getSizeInCellsY());
   voxel_.writeTo(master_);
+  dynamic_.writeTo(master_, now);
   scan_.writeTo(master_);
   inflation_->inflate(master_);
 }

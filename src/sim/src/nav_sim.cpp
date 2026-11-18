@@ -6,6 +6,41 @@
 namespace g1d::sim
 {
 
+PointLabeler truthLabeler(std::string prefix, double margin)
+{
+  return [prefix, margin](
+    const World & world, const std::vector<Eigen::Vector3f> & pts, const Eigen::Isometry3d &,
+    double, std::vector<uint8_t> & dynamic) {
+           std::vector<const Box *> movers;
+           for (const auto & b : world.boxes()) {
+             if (b.name.rfind(prefix, 0) == 0) {movers.push_back(&b);}
+           }
+           for (size_t i = 0; i < pts.size(); ++i) {
+             const Eigen::Vector3d p = pts[i].cast<double>();
+             for (const Box * b : movers) {
+               if ((p.array() >= b->min.array() - margin).all() &&
+                 (p.array() <= b->max.array() + margin).all())
+               {
+                 dynamic[i] = 1;
+                 break;
+               }
+             }
+           }
+         };
+}
+
+bool moveBox(World & world, const std::string & name, double x, double y)
+{
+  for (auto & b : world.boxes()) {
+    if (b.name != name) {continue;}
+    const Eigen::Vector2d half = 0.5 * (b.max - b.min).head<2>();
+    b.min.head<2>() = Eigen::Vector2d(x, y) - half;
+    b.max.head<2>() = Eigen::Vector2d(x, y) + half;
+    return true;
+  }
+  return false;
+}
+
 NavSimulation::NavSimulation(World world, const YAML::Node & config, Pose2D start, NavSimParams p)
 : world_(std::move(world)), p_(std::move(p)), robot_(p_.dynamics, start)
 {
@@ -54,9 +89,13 @@ void NavSimulation::step()
     in.T_lio_imu = T_lio_w * T_w_imu;
     in.lidar_origin_lio = T_lio_w * T_w_lidar.translation();
     in.cloud_lio.reserve(pts_w.size());
+    std::vector<uint8_t> dynamic(pts_w.size(), 0);
+    if (p_.labeler) {p_.labeler(world_, pts_w, T_w_lidar, t_, dynamic);}
     const Eigen::Matrix3f R = T_lio_w.linear().cast<float>();
     const Eigen::Vector3f tr = T_lio_w.translation().cast<float>();
-    for (const auto & p : pts_w) {in.cloud_lio.push_back(R * p + tr);}
+    for (size_t i = 0; i < pts_w.size(); ++i) {
+      (dynamic[i] ? in.dynamic_lio : in.cloud_lio).push_back(R * pts_w[i] + tr);
+    }
     core_->onLio(in);
   }
   if (t_ >= next_scan_) {

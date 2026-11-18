@@ -140,6 +140,97 @@ TEST_CASE("VoxelLayer: mark, 3D ray clearing keeps overhangs, inflation")
   CHECK(cm.costAt(2.9, 0.0) == LETHAL_OBSTACLE);
 }
 
+TEST_CASE("VoxelLayer see-through clearing removes ghosts but keeps blind and occluded voxels")
+{
+  for (const bool see_through : {true, false}) {
+    costmap::VoxelLayerParams p;
+    p.see_through_clear = see_through;
+    p.clear_every_n = 1 << 30;   // isolate see-through: only the first point casts a ray
+    costmap::VoxelLayer layer;
+    layer.configure(p, 120, 120, 0.05, -3.0, -3.0);
+    const Eigen::Vector3d sensor(0.0, 0.0, 1.2);
+    auto along = [&](const Eigen::Vector3d & target, double range) {
+        const Eigen::Vector3d d = (target - sensor).normalized();
+        std::vector<Eigen::Vector3f> out;
+        for (double a = -0.02; a <= 0.02; a += 0.01) {
+          for (double b = -0.02; b <= 0.02; b += 0.01) {
+            out.push_back((sensor + d * range + Eigen::Vector3d(0, a, b)).cast<float>());
+          }
+        }
+        return out;
+      };
+
+    std::vector<Eigen::Vector3f> first;
+    first.emplace_back(0.0f, 0.0f, 3.0f);                       // harmless ray (straight up)
+    for (double z = 0.1; z <= 1.6; z += 0.05) {first.emplace_back(2.01f, 0.01f, z);}  // person
+    first.emplace_back(0.41f, 0.01f, 1.01f);                    // B: within the blind radius
+    first.emplace_back(-1.99f, 0.01f, 0.51f);                   // C: never seen again
+    first.emplace_back(0.01f, 2.01f, 0.51f);                    // D: occluded afterwards
+    layer.addCloud(first, sensor, 1.0);
+    REQUIRE(layer.voxelOccupied(2.02, 0.02, 0.8));
+    REQUIRE(layer.voxelOccupied(0.42, 0.02, 1.02));
+
+    // The person left: background behind the column, returns past B, an occluder in front of D.
+    std::vector<Eigen::Vector3f> later;
+    later.emplace_back(0.0f, 0.0f, 3.0f);
+    for (double y = -1.0; y <= 1.0; y += 0.05) {
+      for (double z = 0.0; z <= 2.4; z += 0.05) {later.emplace_back(4.0f, y, z);}
+    }
+    for (double x = 2.2; x <= 4.0; x += 0.04) {
+      for (double y = -0.3; y <= 0.3; y += 0.04) {later.emplace_back(x, y, 0.0f);}
+    }
+    for (const auto & q : along({0.425, 0.025, 1.05}, 3.0)) {later.push_back(q);}
+    for (const auto & q : along({0.025, 2.025, 0.55}, 1.0)) {later.push_back(q);}
+    layer.addCloud(later, sensor, 1.1);
+    if (see_through) {CHECK(layer.voxelOccupied(2.02, 0.02, 0.8));}  // needs 2 frames
+    layer.addCloud(later, sensor, 1.2);
+
+    int ghost = 0;
+    for (double z = 0.1; z <= 1.6; z += 0.1) {ghost += layer.voxelOccupied(2.02, 0.02, z);}
+    if (see_through) {
+      CHECK(ghost == 0);
+      CHECK(layer.seeThroughCleared() > 10);
+    } else {
+      CHECK(ghost > 10);
+    }
+    CHECK(layer.voxelOccupied(0.42, 0.02, 1.02));     // blind radius
+    CHECK(layer.voxelOccupied(-1.98, 0.02, 0.52));    // no returns in that direction
+    CHECK(layer.voxelOccupied(0.02, 2.02, 0.52));     // occluded by a nearer return
+  }
+}
+
+TEST_CASE("Dynamic points mark a short-lived layer and never the voxel layer")
+{
+  costmap::LayeredCostmapParams p = costmap::LayeredCostmapParams::fromYaml(projectConfig(), "local");
+  REQUIRE(p.dynamic.enabled);
+  costmap::LayeredCostmap cm(p);
+  const Pose2D robot(0, 0, 0);
+  const Eigen::Vector3d sensor(0.05, 0.0, 1.23);
+  std::vector<Eigen::Vector3f> none, person;
+  addBoxPoints(person, 1.5, 1.7, -0.1, 0.1, 0.1, 1.7);
+  cm.addCloud(none, sensor, 10.0, &person);
+  cm.update(robot, 10.0);
+  CHECK(cm.costAt(1.6, 0.0) == LETHAL_OBSTACLE);
+  CHECK_FALSE(cm.voxelLayer().voxelOccupied(1.6, 0.0, 1.0));
+  cm.update(robot, 10.0 + 0.5 * p.dynamic.ttl_s);
+  CHECK(cm.costAt(1.6, 0.0) == LETHAL_OBSTACLE);
+  cm.update(robot, 10.0 + p.dynamic.ttl_s + 0.05);
+  CHECK(cm.costAt(1.6, 0.0) < LETHAL_OBSTACLE);
+
+  // Late person evidence (camera) erases a column the voxel layer already holds.
+  std::vector<Eigen::Vector3f> column;
+  addBoxPoints(column, 2.0, 2.1, 1.0, 1.1, 0.1, 1.7);
+  cm.addCloud(column, sensor, 11.0);
+  cm.update(robot, 11.0);
+  REQUIRE(cm.voxelLayer().voxelOccupied(2.05, 1.05, 1.0));
+  cm.addDynamicPoints(column, sensor, 11.05, 0.1);
+  cm.update(robot, 11.1);
+  CHECK_FALSE(cm.voxelLayer().voxelOccupied(2.05, 1.05, 1.0));
+  CHECK(cm.costAt(2.05, 1.05) == LETHAL_OBSTACLE);
+  cm.update(robot, 11.05 + p.dynamic.ttl_s + 0.05);
+  CHECK(cm.costAt(2.05, 1.05) < LETHAL_OBSTACLE);
+}
+
 TEST_CASE("InflationLayer cost function matches Nav2")
 {
   costmap::InflationLayer inf;

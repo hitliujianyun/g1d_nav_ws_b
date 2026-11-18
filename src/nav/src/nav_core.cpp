@@ -105,6 +105,8 @@ NavConfig NavConfig::fromYaml(const YAML::Node & root)
   c.T_base_scanner = makeIsometry(xyz.at(0), xyz.at(1), xyz.at(2), rpy.at(0), rpy.at(1), rpy.at(2));
   c.obstacle_points_range = get(root, "guard.obstacle_points_range", c.obstacle_points_range);
   c.obstacle_points_voxel = get(root, "guard.obstacle_points_voxel", c.obstacle_points_voxel);
+  c.dynamic_clear_radius = get(root, "costmap.common.dynamic.clear_radius", c.dynamic_clear_radius);
+  c.dynamic_max_age_s = get(root, "costmap.common.dynamic.max_age_s", c.dynamic_max_age_s);
   return c;
 }
 
@@ -123,14 +125,18 @@ void NavCore::onLio(const LioInput & in)
   estimator_.onLio(in);
   if (!in.ok || !estimator_.initialized()) {return;}
   const Eigen::Isometry3d T_odom_lio = estimator_.T_odom_lio();
-  std::vector<Eigen::Vector3f> pts;
-  pts.reserve(in.cloud_lio.size());
+  std::vector<Eigen::Vector3f> pts, dyn;
+  pts.reserve(in.cloud_lio.size() + in.dynamic_lio.size());
+  dyn.reserve(in.dynamic_lio.size());
   const Eigen::Matrix3f R = T_odom_lio.linear().cast<float>();
   const Eigen::Vector3f t = T_odom_lio.translation().cast<float>();
   for (const auto & p : in.cloud_lio) {pts.push_back(R * p + t);}
+  for (const auto & p : in.dynamic_lio) {dyn.push_back(R * p + t);}
   const Eigen::Vector3d origin = T_odom_lio * in.lidar_origin_lio;
-  local_->addCloud(pts, origin, in.stamp);
-  global_->addCloud(pts, origin, in.stamp);
+  local_->addCloud(pts, origin, in.stamp, &dyn);
+  global_->addCloud(pts, origin, in.stamp, &dyn);
+  // The guard reacts to every return, moving or not.
+  pts.insert(pts.end(), dyn.begin(), dyn.end());
 
   // Obstacle points in base_link for the guard reflex layer.
   const Eigen::Isometry3d T_odom_base =
@@ -153,6 +159,21 @@ void NavCore::onLio(const LioInput & in)
     if (seen.insert(key).second) {obstacle_points_base_.push_back(b.cast<float>());}
   }
   obstacle_points_stamp_ = in.stamp;
+}
+
+void NavCore::onDynamicPoints(const DynamicPointsInput & in, double now)
+{
+  if (!estimator_.initialized() || in.points_lio.empty()) {return;}
+  if (now - in.stamp > cfg_.dynamic_max_age_s) {return;}
+  const Eigen::Isometry3d T_odom_lio = estimator_.T_odom_lio();
+  const Eigen::Matrix3f R = T_odom_lio.linear().cast<float>();
+  const Eigen::Vector3f t = T_odom_lio.translation().cast<float>();
+  std::vector<Eigen::Vector3f> pts;
+  pts.reserve(in.points_lio.size());
+  for (const auto & p : in.points_lio) {pts.push_back(R * p + t);}
+  const Eigen::Vector3d origin = T_odom_lio * in.origin_lio;
+  local_->addDynamicPoints(pts, origin, in.stamp, cfg_.dynamic_clear_radius);
+  global_->addDynamicPoints(pts, origin, in.stamp, cfg_.dynamic_clear_radius);
 }
 
 void NavCore::onWheelOdom(double stamp, const Pose2D & wheel_pose, double v, double w)

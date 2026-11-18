@@ -76,6 +76,8 @@ struct NavConfig
   Eigen::Isometry3d T_base_scanner{Eigen::Isometry3d::Identity()};  // chassis LiDAR mount
   double obstacle_points_range{3.0};   // for rt/nav/obstacle_points (guard)
   double obstacle_points_voxel{0.05};
+  double dynamic_clear_radius{0.15};   // voxel removal around late person points (m)
+  double dynamic_max_age_s{0.5};       // late person points older than this are ignored
 
   static NavConfig fromYaml(const YAML::Node & root);
 };
@@ -97,6 +99,8 @@ public:
 
   // ---- inputs
   void onLio(const LioInput & in);
+  /// Person / moving points from perception: removed from the voxel layers, marked short-lived.
+  void onDynamicPoints(const DynamicPointsInput & in, double now);
   void onWheelOdom(double stamp, const Pose2D & wheel_pose, double v, double w);
   void onScan(const ScanData & scan);
   void onJointState(const JointState & q);

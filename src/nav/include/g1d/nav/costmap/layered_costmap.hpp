@@ -27,6 +27,7 @@ struct LayeredCostmapParams
   bool clear_footprint{true};
   VoxelLayerParams voxel;
   ScanLayerParams scan;
+  DynamicLayerParams dynamic;
   InflationParams inflation;
   std::vector<Eigen::Vector2d> footprint;   // base frame polygon
 
@@ -34,17 +35,25 @@ struct LayeredCostmapParams
   static LayeredCostmapParams fromYaml(const YAML::Node & root, const std::string & which);
 };
 
-/// Rolling-window costmap composed of VoxelLayer (Mid-360S) + ScanLayer (chassis LiDAR)
-/// + InflationLayer on a nav2_costmap_2d::Costmap2D master grid, with a Costmap2DROS facade so
-/// MPPI critics and NavFn can use it unchanged.
+/// Rolling-window costmap composed of VoxelLayer (Mid-360S static returns) + DynamicLayer
+/// (short-lived moving obstacles) + ScanLayer (chassis LiDAR) + InflationLayer on a
+/// nav2_costmap_2d::Costmap2D master grid, with a Costmap2DROS facade so MPPI critics and NavFn
+/// can use it unchanged.
 class LayeredCostmap
 {
 public:
   explicit LayeredCostmap(const LayeredCostmapParams & p);
 
+  /// `points_odom` are static returns; `dynamic_odom` (optional) are returns labelled moving:
+  /// they clear the voxel layer along their rays and mark only the dynamic layer.
   void addCloud(
     const std::vector<Eigen::Vector3f> & points_odom, const Eigen::Vector3d & sensor_odom,
-    double stamp);
+    double stamp, const std::vector<Eigen::Vector3f> * dynamic_odom = nullptr);
+  /// Late moving-object evidence (e.g. camera person points): removes them from the voxel
+  /// layer and marks the dynamic layer.
+  void addDynamicPoints(
+    const std::vector<Eigen::Vector3f> & points_odom, const Eigen::Vector3d & origin_odom,
+    double stamp, double clear_radius);
   void addScan(const ScanData & scan, const Pose2D & scanner_odom);
   /// Re-centres (rolling), clears the footprint, composes layers and inflates.
   void update(const Pose2D & robot, double now);
@@ -63,6 +72,8 @@ public:
   unsigned char costAt(double x, double y) const;
   nav_msgs::msg::OccupancyGrid toOccupancyGrid() const;
   const LayeredCostmapParams & params() const {return p_;}
+  const VoxelLayer & voxelLayer() const {return voxel_;}
+  const DynamicLayer & dynamicLayer() const {return dynamic_;}
   double inscribedRadius() const {return inscribed_;}
   double circumscribedRadius() const {return circumscribed_;}
 
@@ -73,6 +84,7 @@ private:
   std::shared_ptr<nav2_costmap_2d::Costmap2DROS> ros_;
   std::shared_ptr<InflationLayer> inflation_;
   VoxelLayer voxel_;
+  DynamicLayer dynamic_;
   ScanLayer scan_;
   double inscribed_{0.0};
   double circumscribed_{0.0};

@@ -26,3 +26,8 @@ g1d_add_test(test_nav_sim test_nav_sim.cpp)
 target_link_libraries(test_nav_sim PRIVATE g1d_sim)
 target_compile_definitions(test_nav_sim PRIVATE G1D_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 set_tests_properties(test_nav_sim PROPERTIES TIMEOUT 1800)
+
+g1d_add_test(test_dynamic_sim test_dynamic_sim.cpp)
+target_link_libraries(test_dynamic_sim PRIVATE g1d_sim)
+target_compile_definitions(test_dynamic_sim PRIVATE G1D_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+set_tests_properties(test_dynamic_sim PROPERTIES TIMEOUT 1800)

@@ -51,7 +51,16 @@ struct LioInput
   Eigen::Vector3d lidar_origin_lio{Eigen::Vector3d::Zero()};
   Eigen::Vector3d velocity_lio{Eigen::Vector3d::Zero()};
   bool ok{false};
-  std::vector<Eigen::Vector3f> cloud_lio;  // registered points in the LIO world frame
+  std::vector<Eigen::Vector3f> cloud_lio;    // registered static points in the LIO world frame
+  std::vector<Eigen::Vector3f> dynamic_lio;  // registered points labelled moving (LIO world)
+};
+
+/// Late moving-object evidence (camera person segmentation, ...) in the LIO world frame.
+struct DynamicPointsInput
+{
+  double stamp{0.0};
+  Eigen::Vector3d origin_lio{Eigen::Vector3d::Zero()};
+  std::vector<Eigen::Vector3f> points_lio;
 };
 
 struct StampedPose
