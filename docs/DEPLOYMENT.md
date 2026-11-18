@@ -92,6 +92,13 @@ pip3 install -e /opt/g1d_ws/third_party/unitree_sdk2_python
 
 本项目的 Python 代码不需要安装，`deploy/g1d.env` 已把 `python/` 和 `third_party/unitree_sdk2_python` 加入 `PYTHONPATH`。也可以 `pip3 install -e /opt/g1d_ws/python`，会得到 `g1d-base-guard`、`g1d-web` 等命令。
 
+动态物体相关的可选依赖（不装也能运行，对应功能自动降级）：
+
+| 功能 | 安装 | 不装时 |
+|---|---|---|
+| 导出地图用 DUFOMap 清理 | `pip3 install dufomap`（PyPI 有 x86 / Windows 轮子；aarch64 没有时需从源码编译，或在 5090 上用 `g1d-mapclean` 离线清理） | 用内置射线清除（较粗） |
+| 相机人员分割（`g1d_perception`） | `pip3 install opencv-python pyzmq ultralytics`；JetPack 自带的 TensorRT；模型见 6 节 P5 | 不启动该服务 |
+
 ## 5. 网络与 DDS
 
 - `system.net_if`：PC2 连接 `192.168.123.x` 的网卡名（`ip addr` 查看，常见为 `eth0`）。所有进程都用它初始化 DDS；开发机上可写 `auto`。
@@ -160,12 +167,27 @@ deploy/run_all.sh --guard-only        # 只启动 guard 和 web
 4. T5：走廊放纸箱、椅子，绕障到达 ≥ 9/10；T6：桌面悬空物，10/10 无碰撞完成或安全拒绝。
 5. 接入 NavGPT（`NavGptBridge`），设置 `camera_latency_s` 为实测的相机延迟。
 
+### P5 动态物体（行人）
+
+背景与方案见 [`DYNAMIC_OBJECTS_STUDY.md`](DYNAMIC_OBJECTS_STUDY.md)。M-detector 默认开启（`lio.dynamic.enabled`），相机分割是可选服务。
+
+1. **代价地图**：Web 打开「局部代价地图」「动态点」图层，让人从机器人前方 2–3 m 走过：人走过后 ≤ 1 s 栅格恢复空闲；橙色动态点应落在人身上，墙和家具上不应持续出现。再把低矮箱子放在机器人前方，推近到视场下方（约 1 m 内），等 30 s 箱子仍在代价地图中。
+2. **M-detector 耗时**：看 `lio_health.label_ms`，目标 < 20 ms；超了调小 `lio.dynamic.max_points`（12000 → 8000）。同时对比关闭时的 `process_ms` 和 T3 误差（恶化 ≤ 20 %）。
+3. **地图残留**：让人反复走过后导出地图（Web「建图 → 导出」），`map_raw.pcd` 是清理前、`map.pcd` 是清理后（DUFOMap）；`meta.json` 的 `cleaning` 给出移除点数、所用方法。
+4. **相机分割（可选）**：
+   1. 标定左目内参 `perception.camera.K / dist` 和 `head_to_camera`（7.1 节），测相机延迟 `latency_s`；
+   2. 录数据：`python3 -m g1d_perception.node --record datasets`（需要先有任意一个 YOLO-seg 模型，例如官方 `yolo11n-seg.pt`，用于验证关联；录制本身不依赖识别结果）；
+   3. 拷到 5090 主机：`python -m g1d_perception.tools.sam3_label datasets/<会话>` 生成标签，`python -m g1d_perception.tools.train_yolo_seg datasets/<会话>…` 训练；
+   4. 把 `best.pt` 拷回 PC2，在 PC2 上导出 TensorRT：`yolo export model=best.pt format=engine half=True imgsz=640`，放到 `models/person_seg.engine`；
+   5. `deploy/run_all.sh --perception`（或 `systemctl enable --now g1d-perception`），Web「人员点」图层应只在人身上出现；`rt/nav/perception_status` 看分割耗时（目标 < 30 ms）。
+
 ### 部署为服务
 
 ```bash
 sudo deploy/install.sh --enable
 sudo systemctl start g1d-guard g1d-web g1d-lio g1d-nav
 journalctl -fu g1d-nav                          # 查看日志
+sudo systemctl enable --now g1d-perception      # 可选：相机人员分割（需要模型）
 ```
 
 ## 7. 需要设置的参数
@@ -185,6 +207,9 @@ journalctl -fu g1d-nav                          # 查看日志
 | `robot.chassis_laser.xyz / rpy` | URDF 值 | 底盘雷达安装位姿（base_link） | 一般用 URDF；偏航可与 Mid-360S 对比确认 |
 | `guard.zero_hold` | 1.0 s | 归零后继续发布零速的时间 | `cmd_vel_probe.py` 的 `silence.stop_time_s` + 0.3 s（工具给出建议值） |
 | `mppi.vx_max / wz_max` | 0.40 / 0.60 | 导航最大线 / 角速度 | 不超过 `cmd_vel_probe.py clamp` 实测的底盘上限 |
+| `perception.camera.K / dist / size` | 估计值 | 头部相机左目内参（仅 `g1d_perception`） | 棋盘格标定（OpenCV `calibrateCamera`），用左半幅图像 |
+| `perception.camera.head_to_camera` | 估计值 | head_link → 相机（x 前、z 上） | 雷达点投影到图像上与边缘对齐；或棋盘格同时被雷达和相机看到 |
+| `perception.camera.latency_s` | 0.06 s | 图像到达时间减去曝光时间 | 拍摄主机上的毫秒时钟，比较图像内容与接收时间 |
 
 ### 7.2 按现场确认
 
@@ -240,7 +265,11 @@ journalctl -fu g1d-nav                          # 查看日志
 |---|---|---|
 | `common.voxel.z_min / z_max` | 0.08 / 1.85 m | 参与避障的高度带：低于 `z_min` 视为地面；`z_max` 应覆盖头部、手臂最高点 |
 | `common.voxel.obstacle_max_range / raytrace_max_range` | 5 / 6 m | 标记 / 清除距离 |
-| `common.voxel.decay_s` | 0 | 障碍衰减时间；0 = 只靠射线清除（盲区内更安全）；动态环境多时可设 3–5 s |
+| `common.voxel.decay_s` | 0 | 障碍衰减时间；0 = 不按时间衰减（盲区内更安全），动态物体由下面两项处理 |
+| `common.voxel.see_through_clear` / `see_through_bin_deg` / `see_through_margin` / `see_through_frames` | true / 2° / 0.2 m / 2 | 视线穿透清除：体素所在方向的回波都在它后面 `margin` 以外、连续 `frames` 帧即清除；拖影清得慢时减小 `frames` 到 1，误清（细杆闪烁）时加大 `margin` |
+| `common.voxel.blind_radius` | 0.6 m | 雷达附近不做穿透清除的半径 |
+| `common.dynamic.enabled` / `ttl_s` | true / 0.8 s | 动态层：动态点标记的栅格保留时间 |
+| `common.dynamic.clear_radius` / `max_age_s` | 0.15 m / 0.5 s | 相机人员点清除体素的半径 / 人员点最大延迟 |
 | `common.inflation.radius / cost_scaling_factor` | 0.55 m / 3.0 | 膨胀半径 / 代价下降速度；T5 / T6 离障碍太近时加大半径 |
 | `local.size_x / size_y / resolution` | 6 m / 0.05 m | 局部地图 |
 | `global.size_x / size_y / resolution` | 20 m / 0.1 m | 全局地图；目标距离上限见 `planner.max_goal_distance` |
@@ -271,10 +300,17 @@ journalctl -fu g1d-nav                          # 查看日志
 | `health.min_effective_points` | 300 | 有效匹配点下限（退化检测） |
 | `health.max_step_translation_m / max_step_yaw_deg` | 0.3 m / 15° | 单帧跳变上限 |
 | `health.max_process_time_s` | 0.15 s | 单帧处理时间上限 |
+| `dynamic.enabled` | true | M-detector 动态点标注（动态点不进地图、只进动态层） |
+| `dynamic.max_points` | 12000 | 每帧送入 M-detector 的点数上限（超出则抽稀，结果按体素扩散回全部点）；Orin 上 `label_ms` > 20 ms 时调小 |
+| `dynamic.refine_voxel / refine_min_points / refine_min_ratio / refine_dilate` | 0.15 m / 3 / 0.4 / 1 | 体素投票：孤立误检去除、标签补全；误检多时加大 `min_points`，人体漏检多时加大 `dilate` |
+| `dynamic.exclusion_voxel` / `map_delay_scans` | 0.2 m / 3 | 动态点周围不入地图的范围 / 地图插入延迟帧数（0 = 不延迟） |
+| `dynamic.m_detector` | `{}` | 按上游参数名覆盖 M-detector 参数（默认值见 `src/lio/src/dynamic_detector.cpp`） |
 
 **状态估计（`state`）**：`wheel_timeout_s` 0.3、`lio_timeout_s` 0.5、`max_extrapolation_s` 0.3、`consistency_window_s` 2.0、`max_lio_wheel_translation_m` 0.3、`max_lio_wheel_yaw_deg` 10、`use_wheel_odom` true、`allow_wheel_only` false（LIO 丢失时不允许只用轮速导航）。
 
-**Web（`web`）**：`map_voxel` 0.05 m（地图很大、Jetson 负载高时加大到 0.1）、`map_max_points` 300 万、`scan_max_points` 3 万、`grid_z_min / grid_z_max` 0.10 / 1.80 m（导出栅格的占据高度带）。
+**Web（`web`）**：`map_voxel` 0.05 m（地图很大、Jetson 负载高时加大到 0.1）、`map_max_points` 300 万、`scan_max_points` 3 万、`grid_z_min / grid_z_max` 0.10 / 1.80 m（导出栅格的占据高度带）。关键帧 `keyframes`：`enabled` true、间隔 `min_dist` 0.3 m / `min_yaw` 0.3 rad / `min_dt` 0.5 s（`min_dist` 和 `min_dt` 都设 0 则每帧都录，用于场景流训练数据）、`max_frames` 4000，存到 `recordings_dir`。导出清理 `cleaning`：`method` auto（有 dufomap 用 DUFOMap，否则射线清除）、`resolution` 0.1 m、`d_s` 0.2 m、`d_p` 1（Mid-360 点密度下不要用论文的 2）。
+
+**相机感知（`perception`，仅 `g1d_perception`）**：`camera.host / zmq_port / crop`（teleimager 服务、头部双目取左半幅）；`segmentation.model`（TensorRT 引擎路径）/ `conf` 0.4；`association.depth_band` 0.6 m（人体前表面之后多深仍算人）、`min_points` 8、`max_range` 8 m、`confirm_hits` 2（连续几帧确认才删地图点）、`box_margin` 0.15 m、`delete_every_s` 0.5 s。
 
 **调试（`debug`）**：`publish_costmap` true；`publish_lidar_cloud` false（标定时打开）。
 
@@ -330,5 +366,7 @@ systemd 单元和 `deploy/g1d.env` 默认 `/opt/g1d_ws`、用户 `unitree`。换
 - [ ] T3 / T4 通过（LIO）
 - [ ] `guard.require_cloud` 恢复为 true
 - [ ] T5 / T6 通过（导航）
+- [ ] P5 动态物体：人走过 ≤ 1 s 清空、视场下方障碍保持、`lio_health.label_ms` < 20 ms、导出地图无行人残留
+- [ ] （可选）相机内参 / 外参 / 延迟已标定，`models/person_seg.engine` 在本机导出，`g1d-perception` 已启用
 - [ ] 现场配置另存，并在 `deploy/g1d.env` 中指向它
 - [ ] systemd 服务已启用，重启机器人后自动运行

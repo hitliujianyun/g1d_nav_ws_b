@@ -84,6 +84,17 @@
 - [x] 测试：Web 单测 18 项 + Web 端到端 1 项（pytest 共 50 项）；浏览器实测导航、任务、T1、遥控、参数、导出
 - [x] 部署：`deploy/systemd/g1d-web.service`、`run_all.sh` 启动 web
 
+### M8 动态物体（方案：`docs/DYNAMIC_OBJECTS_STUDY.md` 第 0 节，实现结果见同文第 8 节）
+- [x] P1 代价地图：体素层"视线穿透清除"（方向分箱最近回波 + 连续 N 帧证据，盲区半径 / 无回波方向不积累证据）、`DynamicLayer`（TTL）、`NavCore::onDynamicPoints`；单测 2 项
+- [x] P1 仿真：`NavSimulation` 逐点标注回调（行人真值），`test_dynamic_sim` 3 个场景（拖影清除时间、行人横穿导航、视场下方障碍保持 30 s）
+- [x] P2 M-detector（hku-mars @ 0645dab，GPL-2.0）：原样提交 → 去 ROS / OpenCV / TBB 移植；体素投票 + 膨胀代替 DBSCAN；倒装雷达下把 case-1 一致性窗口改为 0.15 m
+- [x] P2 FAST-LIO 接入：EKF 后调用标注回调，动态点及邻域不入 ikd-Tree，插入延迟 3 帧做时间一致性；`delete_boxes()`、`map_points()`；LIO 仿真行人测试
+- [x] P2 DDS：`registered_cloud` 增加 `dynamic` 字段、`rt/nav/map_delete`、`rt/nav/person_points`；lio_health 增加动态统计；SDK 头文件语法检查
+- [x] P2 Web：动态点 / 人员点图层，动态点不进累积地图；关键帧录制（KTH / DUFOMap PCD 格式）；导出时 DUFOMap 清理（子进程，`g1d_web.mapclean`），无 dufomap 时射线清除
+- [x] P3 `g1d_perception`：teleimager 相机源、YOLO-seg 后端、掩码 → 点云关联（深度门限 + 去地面）、确认跟踪、贴地安全的删除盒；节点 + 数据集录制；5090 工具：SAM 3 教师标注、YOLO-seg 训练导出、逐帧 DUFOMap 标签（场景流）
+- [x] fake_nav 行人（`--pedestrians`、`--person-points`）；测试：C++ 6 套全过，pytest 67 项全过；浏览器实测 `sim_stack.py --pedestrians 2 --person-points`：动态点 / 人员点图层跟随行人，累积地图无拖影
+- [ ] 上机：见第 6 节 M8 项
+
 ## 4. 关键设计决策
 
 | 决策 | 原因 |
@@ -96,6 +107,11 @@
 | guard 反射层用"整车矩形沿指令圆弧扫掠" | 比固定扇区 / 直走廊更准：转向避让时不误停，向障碍转弯时提前停；慢速区加爬行速度下限，避免永远到不了停车线 |
 | guard 启动时静默，只在运动或零速保持期内发布 | 不抢遥控器 / 其他控制源；停车后按 `zero_hold` 释放底盘 |
 | 安装时把 `libddsc*.so` 以 SONAME 复制到 `install/lib/g1d` 并设 RPATH | SDK 里的 `.so.0` 是 git 符号链接，经 Windows 拷贝会变成文本文件 |
+| 动态点只进短时动态层，不进体素层和 ikd-Tree；任何来源标为动态即按动态处理 | 漏检只会让人多留一会儿（仍被射线 / 穿透清除），误检只会少记一个静态点，都不影响避障安全 |
+| 视线穿透清除只在"该方向有回波且都在体素后面"时积累证据 | 车身遮挡、视场外和盲区方向没有证据，障碍不会因看不见而被清掉 |
+| M-detector 的聚类阶段换成体素投票 | 上游 DBSCAN 依赖完整 PCL；体素投票 + 一格膨胀在仿真里召回更高，且零误检 |
+| DUFOMap 在子进程里跑 | Windows 上与 CycloneDDS 同进程时出现访问冲突；子进程同时也是 5090 上的离线工具 |
+| 相机证据不进安全回路 | 相机延迟、标定误差都只影响"人消失得多快"，不影响停车与避障 |
 
 ## 5. 进度日志
 
@@ -110,6 +126,7 @@
 | 2026-11-14 | M5：guard（扫掠路径反射层 + 爬行速度下限，回环测试停在墙前 0.46 m）、NavClient、NavGPT 桥、mock 机器人、5 个现场工具、标定算法；pytest 28 项通过；多进程冒烟通过 |
 | 2026-11-14 | M6：部署文件、构建 / 打包脚本（CMake 3.16 兼容、符号链接 / LF / 可执行位检查）、README、标定文档；全量构建 + 测试通过 |
 | 2026-11-14 | M7：Web 调试台。需求确认：后端在 PC2、离线、笔记本浏览器、建图只做可视化 + 导出、6 类控制功能全部要。实现后端 / 前端 / fake_nav；浏览器实测：点选目标绕箱到达、3 航点任务 3/3、T1 停车净距 0.44 m、摇杆原地转、参数热更新、地图导出；修复：栅格导出空洞（膨胀一格）、fake_nav 未发 lio_odom |
+| 2026-11-18 | M8：动态物体 P1–P3 实现。仿真结果：行人拖影 ≤ 0.85 s 清除；有标注时行人横穿导航用时 20.8 s（无标注 36.9 s）；M-detector 召回 0.67–0.74（真值位姿 0.78–0.90）、静态误检 ≈ 0；行人走廊地图残留减少 67–83 %；DUFOMap（d_p = 1）合成场景移除 95 % 拖影、墙体保留 99.5 %+。排查：倒装雷达下 M-detector 召回只有 0.2（地面落入一致性窗口）→ 窗口改 0.15 m；DUFOMap 与 CycloneDDS 同进程访问冲突 → 子进程；Web 导出改后台线程后暴露 WebSocket 关闭等待问题 → 限时 |
 
 ## 6. 上机待办（本机无法完成）
 
@@ -118,3 +135,7 @@
 - [ ] 标定：`head_to_livox`、`base_to_agv_z`、升降比例、自身点框、导航姿态（`docs/CALIBRATION.md`）
 - [ ] 验收 T1–T6（README 第 6 节，或 Web「测试」页）；按结果调整 `guard.stop_m`、膨胀半径、MPPI 权重
 - [ ] Web 调试台接真机：确认 `rt/nav/debug` / 代价地图在真实 g1d_nav 下的显示，Jetson 上 g1d_web 的 CPU 占用（大地图时可调大 `web.map_voxel`）
+- [ ] M8 P1：真人走过时看 Web 代价地图，拖影 ≤ 1 s 消失；低矮箱子靠近到视场下方后保持 ≥ 30 s
+- [ ] M8 P2：Orin NX 上看 `lio_health.label_ms`（目标 < 20 ms，超了调小 `lio.dynamic.max_points`）；真人走过后用 `map_points` / 导出地图检查残留；`process_ms` 与定位误差对比关闭时
+- [ ] M8 P2：录关键帧 → 导出，检查 DUFOMap 清理（Orin 上 `pip install dufomap` 是否有 aarch64 轮子，否则在 5090 上用 `g1d-mapclean` 离线清理）
+- [ ] M8 P3：相机内参 / `head_to_camera` 标定、`latency_s` 测量；`--record` 录数据 → 5090 上 SAM 3 标注 → 训练 → Orin 上导出 TensorRT；验收：3 m 内召回 ≥ 95 %、< 30 ms/帧

@@ -2,7 +2,8 @@
 """Runs the whole stack without hardware: fake_nav (+ mock chassis), the real g1d_base_guard and
 g1d_web, each as its own process on one DDS domain. Open http://localhost:8080.
 
-    python tools/sim_stack.py [--domain 7] [--port 8080] [--world lab]
+    python tools/sim_stack.py [--domain 7] [--port 8080] [--world lab] [--pedestrians 2]
+                              [--person-points]
 """
 import argparse
 import os
@@ -19,6 +20,8 @@ def main():
     ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--http-port", type=int, default=18081, help="fake chassis HTTP API")
     ap.add_argument("--world", default="lab", choices=("lab", "empty"))
+    ap.add_argument("--pedestrians", type=int, default=0, help="walking pedestrians (0-3)")
+    ap.add_argument("--person-points", action="store_true", help="simulate camera person points")
     args = ap.parse_args()
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join([os.path.join(ROOT, "python"),
@@ -29,7 +32,8 @@ def main():
     d = str(args.domain)
     cmds = [
         ("fake_nav", [py, "-m", "g1d_nav_py.fake_nav", "--domain", d, "--world", args.world,
-                      "--http-port", str(args.http_port)]),
+                      "--http-port", str(args.http_port), "--pedestrians", str(args.pedestrians)]
+         + (["--person-points"] if args.person_points else [])),
         ("guard", [py, "-m", "g1d_nav_py.guard_node", "--domain", d, "--net-if", "auto",
                    "--chassis-url", f"http://127.0.0.1:{args.http_port}", "--log-dir",
                    os.path.join(ROOT, "logs"), "--other-writers", "warn"]),

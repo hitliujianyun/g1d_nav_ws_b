@@ -2,8 +2,9 @@
 # Starts guard -> lio -> nav in the foreground (bring-up without systemd). Ctrl-C stops nav and
 # lio first and the guard last (the guard brings the base to rest on its own).
 #
-#   deploy/run_all.sh [--guard-only] [--no-lio] [--no-web]
+#   deploy/run_all.sh [--guard-only] [--no-lio] [--no-web] [--perception]
 # The web UI (g1d_web) starts right after the guard: http://<robot-ip>:8080
+# --perception also starts g1d_perception (camera person masks; needs models/person_seg.engine).
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 set -a
@@ -24,11 +25,13 @@ cd "$ROOT"
 GUARD_ONLY=0
 NO_LIO=0
 NO_WEB=0
+PERCEPTION=0
 for a in "$@"; do
   case "$a" in
     --guard-only) GUARD_ONLY=1 ;;
     --no-lio) NO_LIO=1 ;;
     --no-web) NO_WEB=1 ;;
+    --perception) PERCEPTION=1 ;;
     *) echo "unknown option $a" >&2; exit 2 ;;
   esac
 done
@@ -59,6 +62,11 @@ if [ "$GUARD_ONLY" = 0 ]; then
   fi
   taskset -c 4,5 "$BIN/g1d_nav" "$G1D_CONFIG" > >(tee "$LOGS/nav-$STAMP.log") 2>&1 &
   pids+=($!)
+  if [ "$PERCEPTION" = 1 ]; then
+    taskset -c 6 python3 -m g1d_perception.node --config "$G1D_CONFIG" \
+      > >(tee "$LOGS/perception-$STAMP.log") 2>&1 &
+    pids+=($!)
+  fi
 fi
 echo "[run_all] running (logs in $LOGS); Ctrl-C to stop"
 wait

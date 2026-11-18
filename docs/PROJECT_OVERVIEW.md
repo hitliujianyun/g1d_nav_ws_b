@@ -27,14 +27,17 @@ g1d_base_guard ── chassis_scan（底盘雷达转点云）──────�
 slamware scan、wirelesscontroller、底盘 HTTP 事件、estop、teleop ──▶ g1d_base_guard ──▶ rt/cmd_vel_no_limit（唯一写入者）
                                                                      │
                                      g1d_web（浏览器调试台）◀── 订阅全部 rt/nav/* ──┘
+
+头部相机 ─ZMQ─▶ g1d_perception（可选）── person_points ──▶ g1d_nav；map_delete ──▶ g1d_lio
 ```
 
 | 进程 | 语言 | 频率 | 职责 | 建议 CPU 核 |
 |---|---|---|---|---|
-| `g1d_lio` | C++17 | 10 Hz（帧） | Mid-360S 取数、帧聚合、自身点过滤、FAST-LIO2、健康监测 | 2、3 |
+| `g1d_lio` | C++17 | 10 Hz（帧） | Mid-360S 取数、帧聚合、自身点过滤、FAST-LIO2、M-detector 动态点标注、健康监测 | 2、3 |
 | `g1d_nav` | C++17 | 20 Hz（控制） | 身体运动学、状态估计、代价地图、NavFn、MPPI、目标状态机 | 4、5 |
 | `g1d_base_guard` | Python | 30 Hz | 底盘指令唯一写入者：限幅、看门狗、反射层、急停、遥控、底盘雷达转发 | 6 |
-| `g1d_web` | Python | 10–20 Hz | Web 调试 / 可视化 / 控制 | 7 |
+| `g1d_web` | Python | 10–20 Hz | Web 调试 / 可视化 / 控制、关键帧录制、地图导出清理 | 7 |
+| `g1d_perception`（可选） | Python + TensorRT | 相机帧率 | 头部相机人员分割、掩码内雷达点、地图删除盒子 | 6（GPU 推理） |
 
 启动顺序：guard → web → lio（机器人静止 2 s 用于 IMU 初始化）→ nav。guard 最先启动、最后退出。
 
@@ -62,9 +65,10 @@ slamware scan、wirelesscontroller、底盘 HTTP 事件、estop、teleop ──�
 - **帧聚合**：把点包按 `lidar.frame_ms`（100 ms）拼成一帧，每个点的时间 = 包时间戳 + 点序号 × 点间隔，供 FAST-LIO 去畸变。
 - **预处理**：去掉 `blind`（0.6 m）以内和 `max_range` 以外的点；**自身点过滤**——把 `self_filter.boxes`（head_link 坐标系下的盒子：头、躯干、立柱、收拢的手臂）内的点删掉，避免机器人自身被当作障碍或特征。
 - **FAST-LIO2**：迭代误差状态卡尔曼滤波（IESKF）+ ikd-Tree 增量地图，算法代码保持上游原样，只去掉了 ROS / PCL / Boost 依赖并封装为 `fast_lio_api`（`init / push_imu / push_scan / process / reset`）。
+- **动态点标注（M-detector）**：EKF 更新之后、点插入 ikd-Tree 之前，用 M-detector 给当前帧逐点打"动态"标签（`lio.dynamic`，见 4.6 节）。被标为动态的点及其邻域不插入地图，插入还会延迟 3 帧做时间一致性检查；收到 `rt/nav/map_delete` 时按盒子删除地图点。
 - **健康监测**：有效点数过少、单帧位移 / 转角跳变、处理超时、高度漂移、法向量特征值过小（退化场景，如长走廊）时报告错误；连续 `bad_frames_to_fail` 帧异常即 `ok=false`。
 - **时钟映射**：雷达时间戳与主机时间不同步时，用滑动窗口最小偏移把雷达时间映射到主机时间（`ClockMapper`），输出的时间戳为主机时间。
-- **输出**：`rt/nav/lio_odom`（IMU 在 `odom_lio` 下的位姿）、`rt/nav/registered_cloud`（配准后的当前帧点云，5 cm 降采样）、`rt/nav/lio_health`（JSON），可选 `rt/nav/livox_cloud`（雷达坐标系原始点云，标定用）。
+- **输出**：`rt/nav/lio_odom`（IMU 在 `odom_lio` 下的位姿）、`rt/nav/registered_cloud`（配准后的当前帧点云，5 cm 降采样，`dynamic` 字段 1 = 运动点）、`rt/nav/lio_health`（JSON，含动态点数、标注耗时），可选 `rt/nav/livox_cloud`（雷达坐标系原始点云，标定用）。
 
 ### 4.2 g1d_nav：导航核心
 
@@ -85,7 +89,8 @@ slamware scan、wirelesscontroller、底盘 HTTP 事件、estop、teleop ──�
 | local | 6 × 6 m，0.05 m，随机器人滚动 | MPPI 局部避障 |
 | global | 20 × 20 m，0.1 m，随机器人滚动 | NavFn 全局规划、目标合法性检查 |
 
-- **VoxelLayer**：每个栅格存一列高度位掩码（`z_min` 0.08 m 到 `z_max` 1.85 m，0.1 m 一格）。Mid-360S 点云标记障碍，三维射线（Amanatides–Woo）清除视线经过的体素——只清除射线真正穿过的高度，所以桌面、货架隔板这样的**悬空障碍不会被地面方向的射线误清除**。`decay_s: 0` 表示障碍保留到被射线清除（雷达近距离盲区内仍然安全）。
+- **VoxelLayer**：每个栅格存一列高度位掩码（`z_min` 0.08 m 到 `z_max` 1.85 m，0.1 m 一格）。Mid-360S 的**静态**点标记障碍，三维射线（Amanatides–Woo）清除视线经过的体素——只清除射线真正穿过的高度，所以桌面、货架隔板这样的**悬空障碍不会被地面方向的射线误清除**。另有**视线穿透清除**：某体素所在方向（2° 分箱）的回波都在它后面，连续 2 帧即清除；该方向没有回波（车身遮挡、视场外）或体素在雷达 0.6 m 盲区内则不积累证据，所以看不见的障碍不会被清掉。`decay_s: 0` 表示没有按时间的衰减。
+- **DynamicLayer**：标为动态的点（M-detector、相机人员点）只标记这一层，栅格在最后一次观测后 `ttl_s`（0.8 s）内为致命障碍，之后自动消失；动态点的射线仍清除体素层。
 - **ScanLayer**：底盘单线雷达（guard 转发的 `rt/nav/chassis_scan`）标记和二维射线清除，覆盖头部雷达看不到的近地低矮障碍。
 - **InflationLayer**：Nav2 的膨胀公式（`radius` 0.55 m、`cost_scaling_factor` 3.0），实现 MPPI 的 `InflationLayerInterface`，CostCritic 可直接使用。
 
@@ -134,7 +139,7 @@ guard 还把底盘 `LaserScan_` 转成 `base_link` 下的点云发布到 `rt/nav
 
 ### 4.4 g1d_web：Web 调试台
 
-运行在 PC2 上的 asyncio 服务（只用 Python 标准库 + numpy + unitree_sdk2py），浏览器端为原生 JavaScript + three.js r160（随仓库提供，离线可用）。功能：3D / 俯视显示累积点云地图、当前帧、障碍点、底盘雷达、代价地图、路径、MPPI 轨迹、可通行扇区；点选导航、多航点任务、Web 遥控、急停、T1–T6 验收向导、参数热更新与写回、地图导出（PCD、PNG + YAML、轨迹 CSV）。同一时间只有一个页面拥有控制权。详见 [`WEB_UI.md`](WEB_UI.md)。
+运行在 PC2 上的 asyncio 服务（只用 Python 标准库 + numpy + unitree_sdk2py），浏览器端为原生 JavaScript + three.js r160（随仓库提供，离线可用）。功能：3D / 俯视显示累积点云地图、当前帧、障碍点、底盘雷达、动态点、相机人员点、代价地图、路径、MPPI 轨迹、可通行扇区；点选导航、多航点任务、Web 遥控、急停、T1–T6 验收向导、参数热更新与写回、地图导出（PCD、PNG + YAML、轨迹 CSV）。动态点不进累积地图；建图时录制关键帧，导出时用 DUFOMap 清除残留（4.6 节）。同一时间只有一个页面拥有控制权。详见 [`WEB_UI.md`](WEB_UI.md)。
 
 ### 4.5 工具与仿真
 
@@ -148,7 +153,20 @@ guard 还把底盘 `LaserScan_` 转成 `base_link` 下的点云发布到 `rt/nav
 | `tools/sim_stack.py` | 本机无硬件运行 fake_nav + mock 底盘 + 真实 guard + web |
 | `g1d_sim_demo` + `tools/plot_sim_trace.py` | C++ 离线闭环仿真演示与轨迹图 |
 
-`src/sim` 是 C++ 闭环仿真库（盒子世界、Mid-360 射线仿真、IMU 仿真、差速底盘），用于 LIO 精度测试和导航闭环测试；`python/g1d_nav_py/mock_robot.py` 和 `fake_nav.py` 在 DDS 层模拟底盘和 lio + nav，用于 Python / Web 的端到端测试。
+`src/sim` 是 C++ 闭环仿真库（盒子世界、Mid-360 射线仿真、IMU 仿真、差速底盘，可移动的盒子当行人，逐点标注回调），用于 LIO 精度测试和导航闭环测试；`python/g1d_nav_py/mock_robot.py` 和 `fake_nav.py` 在 DDS 层模拟底盘和 lio + nav（`--pedestrians` 加行人），用于 Python / Web 的端到端测试。
+
+### 4.6 动态物体
+
+设计与选型见 [`DYNAMIC_OBJECTS_STUDY.md`](DYNAMIC_OBJECTS_STUDY.md)（第 0 节方案，第 8 节实现结果）。总原则：任何来源标为动态的点都**不进 ikd-Tree、不进静态体素层**，只进短时动态层；guard 仍用全部障碍点。漏检只会让人多留一会儿，误检只会少记一个静态点，都不影响避障安全。
+
+| 环节 | 机制 | 位置 |
+|---|---|---|
+| 逐点标注 | M-detector（hku-mars，Nature Comms 2024）三类遮挡判据 + 体素投票 / 膨胀 | `g1d_lio`（`lio.dynamic`） |
+| 点云地图 | 动态点及邻域不插入；插入延迟 3 帧；相机确认的人按盒子删除（`rt/nav/map_delete`） | `g1d_lio` |
+| 代价地图 | 动态层 TTL 0.8 s；视线穿透清除；盲区 / 遮挡方向保护 | `g1d_nav` |
+| 静止的人 | 头部相机 YOLO-seg 掩码 → 掩码内雷达点（深度门限、去地面）→ `rt/nav/person_points`；连续 2 帧确认后发删除盒子 | `g1d_perception`（可选服务） |
+| 导出地图 | 关键帧录制（KTH / DUFOMap PCD 格式）→ 导出时 DUFOMap 清理（子进程 `g1d_web.mapclean`；无 dufomap 时射线清除） | `g1d_web` |
+| 5090 离线 | SAM 3 教师标注 → YOLO-seg 训练导出；逐帧 DUFOMap 标签（场景流训练数据） | `g1d_perception.tools` |
 
 ## 5. 接口
 
@@ -162,7 +180,10 @@ guard 还把底盘 `LaserScan_` 转成 `base_link` 下的点云发布到 `rt/nav
 | `rt/lowstate` / `rt/waistpitchstate` | `unitree_hg::LowState_` / `MotorState_` | 本体 | — | 腰偏航（12 号）、手臂（15–28 号）/ 腰俯仰 |
 | `rt/wirelesscontroller` | `unitree_go::WirelessController_` | 本体 | — | 遥控器（人工接管检测） |
 | `rt/nav/lio_odom` | `Odometry_` | g1d_lio | 10 Hz | IMU 在 `odom_lio` 下的位姿 |
-| `rt/nav/registered_cloud` | `PointCloud2_` | g1d_lio | 10 Hz | 配准点云（`odom_lio`） |
+| `rt/nav/registered_cloud` | `PointCloud2_` | g1d_lio | 10 Hz | 配准点云（`odom_lio`），字段 x / y / z / `dynamic`（float32，1 = 运动点） |
+| `rt/nav/map_delete` | `String_`（JSON） | g1d_perception | 事件 | `{"frame": "odom_lio", "boxes": [[x0,x1,y0,y1,z0,z1], …]}`，g1d_lio 删除盒内地图点 |
+| `rt/nav/person_points` | `PointCloud2_` | g1d_perception | ≤ 相机帧率 | 相机人员掩码内的雷达点（`odom_lio`），g1d_nav 清除体素并标记动态层 |
+| `rt/nav/perception_status` | `String_`（JSON） | g1d_perception | 1 Hz | 帧数、人员数、删除盒数、分割耗时 |
 | `rt/nav/lio_health` | `String_`（JSON） | g1d_lio | 10 Hz | `ok`、错误列表、有效点数、残差、处理耗时、时钟偏移 |
 | `rt/nav/chassis_scan` | `PointCloud2_` | guard | 10 Hz | 底盘雷达点（`base_link`） |
 | `rt/nav/goal` | `String_`（JSON） | 客户端 | 事件 | 导航目标（5.2 节） |
@@ -235,6 +256,9 @@ guard 还把底盘 `LaserScan_` 转成 `base_link` 下的点云发布到 `rt/nav
 |---|---|---|
 | FAST_LIO（含 ikd-Tree、IKFoM） | `7cc4175` | vendor 到 `third_party/fast_lio`：先原样提交，再去掉 ROS / PCL / Boost、封装 API；IESKF 与 ikd-Tree 算法未改 |
 | Nav2（costmap_2d 核心、voxel_grid、navfn、mppi_controller、nav2_core / nav2_util 头文件） | `4c01575` | vendor 到 `third_party/nav2`，代码原样，通过 `src/ros_shim` 垫片（rclcpp 日志 / 参数、消息结构体、pluginlib 静态注册等）免 ROS 编译 |
+| M-detector（GPL-2.0） | `0645dab` | vendor 到 `third_party/m_detector`：先原样提交，再去掉 ROS / OpenCV / TBB / DBSCAN 聚类；三类判据原样，Mid-360 参数改了 case-1 一致性窗口（见 `UPSTREAM.md`） |
+| DUFOMap（BSD-3） | pip `dufomap` 1.1 | 可选依赖，导出清理与离线工具（子进程调用） |
+| SAM 3（SAM License）、Ultralytics YOLO（AGPL-3.0） | — | 可选依赖：5090 上标注 / 训练，PC2 上推理；不随仓库分发 |
 | Livox-SDK2、unitree_sdk2、unitree_sdk2_python、Eigen 3.4.0、yaml-cpp 0.8.0、Boost.Preprocessor | — | git 子模块，未修改 |
 | unitree_robotskills `slamware_idl.py` | — | 复制 `LaserScan_` 定义（真机验证过的类型） |
 | nlohmann/json、doctest、three.js r160 | — | 单文件库，原样随仓库提供 |
@@ -247,16 +271,17 @@ CMake 选项：`G1D_BUILD_TESTS`（默认 ON）、`G1D_WITH_UNITREE`（DDS 程�
 
 | 测试 | 内容 | 结果 |
 |---|---|---|
-| `test_common` / `test_lio_units` / `test_nav_units` | 几何、配置、时钟、帧聚合、预处理、运动学、代价地图、规划、MPPI | 通过 |
-| `test_lio_sim` | 合成 Mid-360（5000 点 / 帧、IMU 200 Hz），6.9 m 轨迹 | 最大误差 0.05 m / 0.09°，单帧 7 ms |
+| `test_common` / `test_lio_units` / `test_nav_units` | 几何、配置、时钟、帧聚合、预处理、运动学、代价地图（含穿透清除、动态层）、规划、MPPI；M-detector 移植（静止 / 平移 / 旋转 / 倒装） | 通过 |
+| `test_lio_sim` | 合成 Mid-360（5000 点 / 帧、IMU 200 Hz），6.9 m 轨迹；行人场景（M-detector 开 / 关） | 最大误差 0.05 m / 0.09°，单帧 7 ms；行人召回 0.67、地图残留 −67 % |
 | `test_nav_sim` | 9 个闭环场景：绕箱、桌面悬空、房间连续航点 + 延迟补偿、目标在障碍内、原地转、simple 通 / 堵、LIO 丢失、死路、调试输出与参数热更新 | 全部无碰撞（整机 0–1.75 m 高度检测） |
-| pytest（50 项） | guard 逻辑、消息、标定算法、NavGPT 桥、Web 各模块；DDS 回环端到端（guard 停在墙前 0.46 m）；Web 端到端（导航、任务、参数、导出、遥控、急停） | 通过 |
+| `test_dynamic_sim` | 行人横穿（拖影清除时间）、行人横穿导航路径、视场下方障碍保持 30 s | 拖影 ≤ 0.85 s，无碰撞 |
+| pytest | guard 逻辑、消息、标定算法、NavGPT 桥、Web 各模块；DDS 回环端到端（guard 停在墙前 0.46 m）；Web 端到端（导航、任务、参数、导出、遥控、急停）；关键帧 / DUFOMap / 射线清除；相机关联与跟踪 | 通过 |
 
 C++ DDS 程序（`g1d_lio` / `g1d_nav`）依赖 unitree_sdk2 的 Linux 库，开发机上只做了语法检查，需要在机器人上编译。
 
 ## 9. 已知限制
 
 - 不保存地图、不做重定位：每次启动 `odom` 原点为启动位置；Web 导出的地图只用于查看和记录。
-- 动态行人只通过体素射线清除和 guard 反射层处理，没有运动预测。
+- 动态行人：M-detector 对沿视线方向走、离雷达 > 5 m 的人召回较低；静止的人只能靠相机分割（需要标定和训练好的模型）；没有运动预测（P4，待换 Thor）。
 - LIO 在长走廊、空旷大厅等几何退化场景可能失效（健康监测会报告并停止导航）。
 - 若干参数（外参、身体链偏移、底盘指令行为）需要在真机上实测，见 [`DEPLOYMENT.md`](DEPLOYMENT.md)。

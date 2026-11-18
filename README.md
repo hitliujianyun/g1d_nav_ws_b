@@ -4,6 +4,7 @@
 
 - **定位**：FAST-LIO2（去 ROS / PCL 改造）+ 底盘轮速融合，按身体关节（升降、腰部）实时计算雷达位姿。
 - **避障**：Nav2 Costmap2D 体素层（能看到桌沿等悬空障碍）+ 底盘单线雷达层 + 膨胀；NavFn 全局规划 + Nav2 MPPI 局部控制。
+- **动态物体**：M-detector 逐点标出行人等运动点，不进 FAST-LIO 地图、只进短时动态层；代价地图按"视线穿透"清除人走过的拖影，盲区内的障碍不会被误清；导出地图用 DUFOMap 清除残留；可选的头部相机人员分割（YOLO-seg，由 5090 上 SAM 3 标注蒸馏）补上静止的人。
 - **安全**：独立的 `g1d_base_guard` 是底盘指令的唯一写入者，负责限速、看门狗、近距离反射停车、急停和遥控接管。
 - **接入 NavGPT**：发相对航点 `(dx, dy, dyaw)` 和图像时刻，`g1d_nav` 自动补偿推理延迟；失败时返回原因和可通行方向。
 - **Web 调试台**：浏览器里看点云、地图、代价地图、路径，点选导航、多航点任务、遥控、急停、验收测试、在线调参、导出地图。
@@ -22,6 +23,7 @@ Mid-360S ─▶ g1d_lio (FAST-LIO2) ─▶ g1d_nav (代价地图 + NavFn + MPPI 
 | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) | 移植到实机：环境准备、编译、分阶段上线、**需要设置 / 标定的参数**、参数参考、故障排查 |
 | [`docs/CALIBRATION.md`](docs/CALIBRATION.md) | 外参、身体链、自身点框、底盘行为的标定步骤 |
 | [`docs/WEB_UI.md`](docs/WEB_UI.md) | Web 调试台使用说明 |
+| [`docs/DYNAMIC_OBJECTS_STUDY.md`](docs/DYNAMIC_OBJECTS_STUDY.md) | 动态物体过滤：调研、选型、最终方案（第 0 节）与实现结果（第 8 节） |
 | [`PLAN.md`](PLAN.md) | 开发计划、TODO、进度日志 |
 | `../design/G1D_LIO_MPPI_Nav_Plan.md` | 原始设计方案 |
 
@@ -37,6 +39,7 @@ git submodule update --init --recursive
 powershell -ExecutionPolicy Bypass -File scripts\build_host.ps1 -Demo
 # 无硬件体验 Web 调试台（模拟雷达 / 导航 / 底盘，guard 为真实进程）
 python tools/sim_stack.py          # 浏览器打开 http://localhost:8080
+python tools/sim_stack.py --pedestrians 2   # 加两个走动的行人（橙色动态点）
 ```
 
 ### 2. 机器人（G1-D PC2：Jetson Orin NX，Ubuntu 20.04）
@@ -86,9 +89,9 @@ prompt += bridge.feedback(result)   # 失败时附带原因和可通行方向，
 | 路径 | 内容 |
 |---|---|
 | `src/` | C++：`common` `lio` `nav`（算法核心）、`apps`（`g1d_lio` / `g1d_nav` 可执行程序）、`sim` `tools`、`ros_shim` `pcl_lite`（免 ROS / PCL 垫片） |
-| `python/` | `g1d_nav_py`（guard、NavClient、NavGPT 桥、mock 底盘、fake_nav）、`g1d_web`（Web 调试台）、`tests` |
+| `python/` | `g1d_nav_py`（guard、NavClient、NavGPT 桥、mock 底盘、fake_nav）、`g1d_web`（Web 调试台、关键帧录制、地图清理）、`g1d_perception`（相机人员分割 + 5090 标注 / 训练工具）、`tests` |
 | `tools/` | 接口探测、底盘行为实测、录制、外参标定、命令行、本机仿真栈 |
 | `config/` | `g1d_nav.yaml`（所有进程共用参数）、`mid360s_config.json` |
 | `deploy/` `scripts/` | systemd 单元、启动脚本、CycloneDDS 配置；构建与打包脚本 |
-| `third_party/` | 修改过的上游代码（FAST-LIO2、Nav2 子集）与子模块（Eigen、yaml-cpp、Livox-SDK2、unitree_sdk2 等） |
+| `third_party/` | 修改过的上游代码（FAST-LIO2、Nav2 子集、M-detector）与子模块（Eigen、yaml-cpp、Livox-SDK2、unitree_sdk2 等） |
 | `tests/` | C++ 单元测试与闭环仿真测试 |

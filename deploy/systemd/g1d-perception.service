@@ -1,0 +1,20 @@
+[Unit]
+Description=g1d camera person segmentation -> rt/nav/person_points, rt/nav/map_delete (optional, P3)
+After=network-online.target g1d-lio.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=unitree
+EnvironmentFile=/opt/g1d_ws/deploy/g1d.env
+WorkingDirectory=/opt/g1d_ws
+ExecStart=/usr/bin/python3 -m g1d_perception.node --config ${G1D_CONFIG}
+Restart=on-failure
+RestartSec=3
+CPUAffinity=6
+Nice=5
+KillSignal=SIGINT
+TimeoutStopSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -14,3 +14,4 @@ if [ "${1:-}" = "--enable" ]; then
 fi
 echo "installed: systemctl start g1d-guard g1d-web g1d-lio g1d-nav ; journalctl -fu g1d-nav"
 echo "web UI: http://<robot-ip>:8080"
+echo "optional (needs models/person_seg.engine built on this Orin): systemctl enable --now g1d-perception"

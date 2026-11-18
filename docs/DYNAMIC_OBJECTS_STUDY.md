@@ -30,6 +30,8 @@
 | P3 静止的人（约 2 周） | 5090 上 SAM 3 标注 → 蒸馏 YOLO11n / YOLO26n-seg → PC2 TensorRT；相机-雷达投影（用头部 FK） | 相机视场内 3 m 内人员召回率 ≥ 95%；PC2 推理 < 30 ms / 帧 |
 | P4 预测（换 Thor 后） | 场景流训练与上机、预测层 | 迎面行人场景提前避让，T5 成功率不下降 |
 
+> **实现状态**：P1–P3 的代码、仿真与测试已完成，P4 只做了训练数据导出。与本节方案的差异和仿真实测数据见**第 8 节**；上机验收项在 `PLAN.md` 第 6 节。
+
 ---
 
 ## 1. 现状与问题来源
@@ -287,3 +289,51 @@ Web 地图导出：关键帧（点云 + 位姿）─▶ DUFOMap 离线清理 ─
 47. Meta AI 博客：SAM 3.1 — https://ai.meta.com/blog/segment-anything-model-3/
 48. Livox Mid-360 规格 — https://www.livoxtech.com/mid-360/specs
 49. *Analyze, Debug, Optimize: Real-Time Tracing for Perception and Mapping Systems in ROS 2*（Wi-Fi 过载时最高 500 ms 延迟）— https://arxiv.org/abs/2204.11778
+
+---
+
+## 8. 实现结果（2026-11-18）
+
+### 8.1 代码位置
+
+| 内容 | 位置 |
+|---|---|
+| 视线穿透清除、盲区保护、动态层（TTL） | `src/nav/src/costmap/layers.cpp`（`VoxelLayer::seeThrough`、`DynamicLayer`）、`layered_costmap.cpp`、`NavCore::onLio / onDynamicPoints` |
+| M-detector（去 ROS 移植） | `third_party/m_detector/`（原样提交 `b2cf960`，改动见 `UPSTREAM.md`），封装 `src/lio/src/dynamic_detector.cpp` |
+| FAST-LIO 接入 | `third_party/fast_lio/src/laserMapping.cpp`（`set_point_labeler`、插入延迟、`delete_boxes`、`map_points`）、`src/lio/src/lio_estimator.cpp` |
+| DDS | `src/apps/dds_util.hpp`（`makeCloudXYZL / readCloudXYZL`）、`g1d_lio_main.cpp`（`rt/nav/map_delete`）、`g1d_nav_main.cpp`（`rt/nav/person_points`） |
+| Web：动态点 / 人员点图层、关键帧录制、导出清理 | `python/g1d_web/{hub,app,mapping,mapclean}.py` |
+| 相机感知（P3） | `python/g1d_perception/`（节点、关联、跟踪、数据集），5090 工具 `g1d_perception/tools/` |
+| 仿真与测试 | `tests/test_dynamic_sim.cpp`、`test_lio_sim.cpp`、`test_lio_units.cpp`、`test_nav_units.cpp`；`python/tests/test_dynamic.py`、`test_perception.py`；`fake_nav --pedestrians` |
+
+### 8.2 与第 0 节方案的差异
+
+| 方案 | 实现 | 原因 |
+|---|---|---|
+| 单独话题 `rt/nav/dynamic_points` | `rt/nav/registered_cloud` 加 float32 字段 `dynamic`（`point_step` 16） | 动态点与静态点同帧同位姿，不用再做时间配对；只读 x/y/z 的旧程序不受影响 |
+| 视场锥"加速衰减" | 视线穿透清除：方向分箱（2°）记最近回波，某体素所在方向的回波都在它后面（余量 0.2 m）连续 2 帧才清除；盲区半径 0.6 m 内和没有回波的方向不积累证据 | 不按时间衰减，看不见的障碍永远不会被清掉，比衰减更安全 |
+| M-detector 原版聚类（DBSCAN） | 体素投票（0.15 m，邻域动态点 ≥ 3、体素内占比 ≥ 0.4）+ 一格膨胀 | 原版依赖完整 PCL；投票 + 膨胀补全了贴地的腿部 |
+| M-detector 参数照搬 `mid360.yaml` | case-1 一致性窗口 `map_cons_hor_dis1 / ver_dis1` 0.3 / 0.6 → 0.15 / 0.15 m；4 张深度图；10 Hz | 倒装头部雷达下人脚边的地面落进大窗口，腿被判"与地图一致"，静态标签沿身体向上传播（仿真召回 0.2） |
+| 动态点不入 ikd-Tree | 另加：插入延迟 3 帧，窗口内任一帧在附近标出动态点就丢弃 | 单帧漏检的人体部分通常在下一帧被邻近检出，残留再减一半 |
+| DUFOMap 参数 (0.1, 0.2, 2) | `d_p = 1`；在子进程运行 | Mid-360 点密度下 `d_p = 2` 让大部分移动物体体素停留在"未知"（合成场景召回 13 % vs 95 %）；Windows 上与 CycloneDDS 同进程时访问冲突 |
+| 相机-雷达投影"用头部 FK" | 外参链：`lio.extrinsic` × `head_to_livox`⁻¹ × `perception.camera.head_to_camera`；相机位姿按图像时间对 LIO 位姿插值 | 腰 / 升降锁定时头部与雷达刚性相连，直接用雷达位姿最准 |
+| 晚到标签回溯删除 | 相机确认（连续 2 帧）后发 `rt/nav/map_delete` 盒子，盒子在重力对齐的 odom 系里抬离地面 5 cm 再映射回 LIO 系 | 单帧误检不删地图；人脚下的地面保留 |
+
+### 8.3 仿真实测
+
+| 项目 | 结果 | 方案验收 |
+|---|---|---|
+| 行人横穿（机器人静止），拖影最长存在时间 | 仅射线清除 0.85 s；加穿透清除 0.85 s（> 0.3 s 的拖影样本 248 → 160）；加真值标签 0.75 s | ≤ 1 s ✔ |
+| 低矮箱子进入视场下方后保持 | 30 s 后体素全部保留 | ≥ 30 s ✔ |
+| 行人横穿导航路径 | 无标签 36.9 s、有标签 20.8 s 到达，均无碰撞 | 无碰撞 ✔ |
+| M-detector（倒装、20k 点 / 帧） | 真值位姿召回 0.90，静态误检 0；经 FAST-LIO 的闭环召回 0.74、静态误检 2×10⁻⁶ | DA ≥ 90 % 需在真实回放上按体素统计 |
+| ikd-Tree 地图残留（行人走廊，检测器有历史之后） | 72 → 12 点（20k 点 / 帧），73 → 24 点（10k 点 / 帧）；定位误差不变（0.03–0.04 m） | T3 恶化 ≤ 20 % ✔（仿真） |
+| M-detector 耗时（本机 x86） | 10k 点 7 ms、20k 点 18 ms | Orin NX < 20 ms：默认 `max_points` 12000，上机实测 |
+| DUFOMap 导出清理（合成场景） | 拖影移除 95 %，墙体保留 ≥ 99.5 % | SA ≥ 95 % ✔（合成） |
+| 相机关联（合成场景，掩码边缘膨胀 6 像素） | 背景墙点 0 个误入；地面以上精度 > 0.99、召回 > 0.9 | 召回 ≥ 95 % 需用训练好的模型在真机评测 |
+
+### 8.4 尚未完成
+
+- 所有上机项（`PLAN.md` 第 6 节）：Orin NX 耗时、真人回放、相机标定、模型训练与 TensorRT 导出。
+- P4：只导出了场景流训练数据（`g1d_perception.tools.flow_frames`，逐帧 DUFOMap 标签 + 位姿），模型训练、预测层待换 Thor 后进行。
+- 已知限制：M-detector 对沿视线方向运动、离雷达 > 5 m 的人召回较低（真值位姿下 0.4–0.6）；静止的人只能靠相机分割；DUFOMap 对缓慢移动物体的逐帧标签不完整（地图级清理不受影响）。
