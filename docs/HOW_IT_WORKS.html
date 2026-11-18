@@ -1,0 +1,1051 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>g1d_ws 工作原理详解 —— G1-D 激光里程计 + 三维避障导航（免 ROS）</title>
+<style>
+  :root {
+    --bg: #f7f8fa; --fg: #1f2329; --muted: #5c6370; --line: #dfe3ea; --card: #ffffff;
+    --accent: #2563eb; --accent-soft: #e8f0fe; --green: #15803d; --green-soft: #e7f6ec;
+    --orange: #c2410c; --orange-soft: #fff1e6; --red: #b91c1c; --red-soft: #fdeaea;
+    --purple: #7c3aed; --purple-soft: #f1ebfe; --code-bg: #f1f3f6;
+    --mono: "JetBrains Mono", "Cascadia Code", Consolas, "Courier New", monospace;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; font: 15px/1.75 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+         color: var(--fg); background: var(--bg); }
+  nav#toc { position: fixed; top: 0; left: 0; bottom: 0; width: 280px; overflow-y: auto; padding: 22px 16px 40px;
+            background: #111827; color: #cbd5e1; font-size: 13.5px; }
+  nav#toc h2 { color: #fff; font-size: 16px; margin: 0 0 4px; }
+  nav#toc .sub { color: #94a3b8; font-size: 12px; margin-bottom: 16px; }
+  nav#toc a { color: #cbd5e1; text-decoration: none; display: block; padding: 3px 8px; border-radius: 4px; }
+  nav#toc a:hover { background: #1f2937; color: #fff; }
+  nav#toc ol { list-style: none; padding: 0; margin: 0; counter-reset: s; }
+  nav#toc ol > li > a::before { counter-increment: s; content: counter(s) ". "; color: #64748b; }
+  nav#toc ol ol { padding-left: 16px; counter-reset: none; }
+  nav#toc ol ol a { font-size: 12.5px; color: #9aa5b6; }
+  nav#toc ol ol a::before { content: none !important; }
+  main { margin-left: 280px; padding: 36px 56px 120px; max-width: 1180px; }
+  h1 { font-size: 30px; margin: 0 0 6px; }
+  h2 { font-size: 23px; margin: 56px 0 14px; padding-bottom: 8px; border-bottom: 2px solid var(--line); }
+  h3 { font-size: 18px; margin: 32px 0 10px; color: #111827; }
+  h4 { font-size: 15.5px; margin: 22px 0 8px; color: #374151; }
+  p { margin: 8px 0 12px; }
+  a { color: var(--accent); }
+  code { font-family: var(--mono); font-size: 13px; background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+  pre { font-family: var(--mono); font-size: 12.8px; line-height: 1.6; background: #0f172a; color: #e2e8f0;
+        padding: 14px 16px; border-radius: 8px; overflow-x: auto; }
+  pre code { background: none; padding: 0; color: inherit; font-size: inherit; }
+  pre .c { color: #7c8ba1; } pre .k { color: #93c5fd; } pre .s { color: #86efac; } pre .n { color: #fca5a5; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0 18px; background: var(--card); font-size: 14px; }
+  th, td { border: 1px solid var(--line); padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: #f1f4f9; font-weight: 600; white-space: nowrap; }
+  td code { white-space: nowrap; }
+  .lead { font-size: 16.5px; color: #374151; }
+  .meta { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px 20px; margin: 14px 0; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .stat { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .stat b { display: block; font-size: 15px; margin-bottom: 4px; }
+  .stat span { color: var(--muted); font-size: 13px; }
+  .note, .warn, .tip, .key { border-left: 4px solid; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 14.3px; }
+  .note { background: var(--accent-soft); border-color: var(--accent); }
+  .warn { background: var(--orange-soft); border-color: var(--orange); }
+  .tip  { background: var(--green-soft); border-color: var(--green); }
+  .key  { background: var(--purple-soft); border-color: var(--purple); }
+  .note b:first-child, .warn b:first-child, .tip b:first-child, .key b:first-child { margin-right: 4px; }
+  .tag { display: inline-block; font-size: 12px; padding: 0 7px; border-radius: 10px; margin-right: 4px; font-weight: 600; }
+  .t-cpp { background: #dbeafe; color: #1e40af; } .t-py { background: #dcfce7; color: #166534; }
+  .t-js { background: #fef3c7; color: #92400e; }
+  .steps { counter-reset: st; list-style: none; padding: 0; margin: 12px 0; }
+  .steps > li { position: relative; padding: 10px 14px 10px 52px; margin: 8px 0; background: var(--card);
+                border: 1px solid var(--line); border-radius: 8px; }
+  .steps > li::before { counter-increment: st; content: counter(st); position: absolute; left: 12px; top: 10px;
+                        width: 28px; height: 28px; border-radius: 50%; background: var(--accent); color: #fff;
+                        font-weight: 700; text-align: center; line-height: 28px; font-size: 13px; }
+  .steps.green > li::before { background: var(--green); }
+  .steps.orange > li::before { background: var(--orange); }
+  .steps.purple > li::before { background: var(--purple); }
+  .chain { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 14px 0; }
+  .chain .f { background: #111827; color: #fff; padding: 6px 12px; border-radius: 6px; font-family: var(--mono); font-size: 13px; }
+  .chain .t { color: var(--muted); font-size: 12px; text-align: center; padding: 0 4px; line-height: 1.3; }
+  .chain .t::after { content: "⟶"; display: block; font-size: 18px; color: #94a3b8; }
+  .formula { font-family: var(--mono); background: var(--card); border: 1px dashed #b6c2d6; border-radius: 8px;
+             padding: 10px 14px; margin: 10px 0; font-size: 13.5px; overflow-x: auto; white-space: pre; }
+  figure { margin: 18px 0; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+  figure svg { width: 100%; height: auto; display: block; }
+  figcaption { color: var(--muted); font-size: 13px; text-align: center; margin-top: 6px; }
+  svg text { font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+  .small { font-size: 13px; color: var(--muted); }
+  details { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px; margin: 10px 0; }
+  details summary { cursor: pointer; font-weight: 600; }
+  @media (max-width: 1100px) { nav#toc { display: none; } main { margin-left: 0; padding: 24px; }
+    .grid2, .grid3, .grid4 { grid-template-columns: 1fr; } }
+  @media print { nav#toc { display: none; } main { margin: 0; max-width: none; } h2 { page-break-before: always; } }
+</style>
+</head>
+<body>
+
+<nav id="toc">
+  <h2>g1d_ws 工作原理</h2>
+  <div class="sub">G1-D · Mid-360S · FAST-LIO2 · Nav2 MPPI · 免 ROS</div>
+  <ol>
+    <li><a href="#s-overview">项目概述</a></li>
+    <li><a href="#s-arch">总体架构</a>
+      <ol><li><a href="#s-arch-proc">进程划分</a></li><li><a href="#s-arch-dds">通信方式（DDS）</a></li><li><a href="#s-arch-boot">启动与退出顺序</a></li></ol></li>
+    <li><a href="#s-frames">坐标系与位姿链</a></li>
+    <li><a href="#s-journey">一帧数据的完整旅程</a></li>
+    <li><a href="#s-lio">g1d_lio：激光里程计</a>
+      <ol><li><a href="#s-lio-src">数据源</a></li><li><a href="#s-lio-agg">帧聚合与逐点时间</a></li><li><a href="#s-lio-pre">预处理与自身点过滤</a></li>
+      <li><a href="#s-lio-fl">FAST-LIO2 内部流程</a></li><li><a href="#s-lio-health">健康监测与退化检测</a></li><li><a href="#s-lio-clock">时钟映射</a></li></ol></li>
+    <li><a href="#s-nav">g1d_nav：导航核心</a>
+      <ol><li><a href="#s-nav-loop">主循环</a></li><li><a href="#s-nav-kin">身体运动学与姿态锁定</a></li><li><a href="#s-nav-est">状态估计（LIO + 轮速）</a></li>
+      <li><a href="#s-nav-cm">代价地图</a></li><li><a href="#s-nav-plan">NavFn 全局规划</a></li><li><a href="#s-nav-mppi">MPPI 局部控制</a></li>
+      <li><a href="#s-nav-fsm">目标状态机 NavCore</a></li><li><a href="#s-nav-out">输出与障碍点</a></li></ol></li>
+    <li><a href="#s-guard">g1d_base_guard：安全守护</a>
+      <ol><li><a href="#s-guard-pipe">30 Hz 处理流水线</a></li><li><a href="#s-guard-sweep">扫掠路径反射层</a></li><li><a href="#s-guard-pub">发布策略与单一写入者</a></li></ol></li>
+    <li><a href="#s-navgpt">NavGPT 接入与延迟补偿</a></li>
+    <li><a href="#s-web">g1d_web：Web 调试台</a></li>
+    <li><a href="#s-safety">多层安全设计与故障场景</a></li>
+    <li><a href="#s-noros">免 ROS 移植的实现方式</a></li>
+    <li><a href="#s-iface">接口参考</a></li>
+    <li><a href="#s-params">关键参数速查</a></li>
+    <li><a href="#s-build">构建、仿真与测试</a></li>
+    <li><a href="#s-tree">目录结构</a></li>
+    <li><a href="#s-limits">已知限制</a></li>
+  </ol>
+</nav>
+
+<main>
+
+<h1>g1d_ws 工作原理详解</h1>
+<div class="meta">适用代码：<code>D:\code\unitree_ws\g1d_ws</code>（提交 <code>068e6dd</code>）。本文基于源代码逐模块整理，所有数值默认取自 <code>config/g1d_nav.yaml</code> 和代码中的缺省值。</div>
+
+<!-- ================================================================== 1 -->
+<h2 id="s-overview">1. 项目概述</h2>
+
+<p class="lead">g1d_ws 让宇树 <b>G1-D 轮式人形机器人</b>只用头部的 <b>Livox Mid-360S</b> 激光雷达和底盘轮速，在<b>不安装 ROS</b> 的前提下实现：高精度激光里程计、看得见悬空障碍的三维避障导航，以及一个独立于导航算法的底盘安全守护层。系统最终只向底盘写一个话题：<code>rt/cmd_vel_no_limit</code>（线速度 <code>linear.x</code>、角速度 <code>angular.z</code>）。</p>
+
+<h3>要解决的问题</h3>
+<div class="grid2">
+  <div class="card"><b>原有方式的不足</b>
+    <ul>
+      <li>NavGPT 给出相对航点后，底盘"先转到目标角度、再直行"，<b>没有定位闭环</b>，走多远靠开环时间估计。</li>
+      <li><b>没有避障</b>：底盘自带单线雷达只扫约 0.1 m 高的一个平面，<b>看不到桌沿、货架隔板</b>等悬空障碍。</li>
+      <li>多个程序都可能直接写底盘速度，没有统一的限速、看门狗和急停。</li>
+    </ul>
+  </div>
+  <div class="card"><b>本项目的方案</b>
+    <ul>
+      <li><b>定位</b>：FAST-LIO2（去 ROS / PCL / Boost 改造）+ 底盘轮速外推，按升降、腰部关节实时计算雷达位姿。</li>
+      <li><b>避障</b>：Nav2 Costmap2D + 自研体素层（三维射线清除，保留悬空物）+ 底盘雷达层 + 膨胀；NavFn 全局规划 + Nav2 MPPI 局部控制。</li>
+      <li><b>安全</b>：<code>g1d_base_guard</code> 是底盘指令的<b>唯一写入者</b>，负责限幅、看门狗、扫掠路径反射停车、急停、遥控接管。</li>
+      <li><b>接入</b>：NavGPT 继续发"相对航点 + 图像时刻"，系统自动补偿推理延迟并返回失败原因和可通行方向。</li>
+    </ul>
+  </div>
+</div>
+
+<div class="grid4">
+  <div class="stat"><b>g1d_lio</b><span class="tag t-cpp">C++17</span><br><span>10 Hz · Mid-360S → FAST-LIO2 → 位姿 / 配准点云 / 健康</span></div>
+  <div class="stat"><b>g1d_nav</b><span class="tag t-cpp">C++17</span><br><span>20 Hz · 运动学 + 状态估计 + 代价地图 + NavFn + MPPI + 状态机</span></div>
+  <div class="stat"><b>g1d_base_guard</b><span class="tag t-py">Python</span><br><span>30 Hz · 底盘指令唯一写入者，反射层 / 看门狗 / 急停</span></div>
+  <div class="stat"><b>g1d_web</b><span class="tag t-py">Python</span><span class="tag t-js">JS</span><br><span>20 Hz · 浏览器 3D 可视化、点选导航、任务、遥控、验收、调参</span></div>
+</div>
+
+<p>运行平台：机器人 PC2（Jetson Orin NX，Ubuntu 20.04，aarch64），通信只用宇树 SDK2（CycloneDDS 0.10.x）。开发机（Windows + MinGW 或 Linux）上可以编译并测试全部算法核心，DDS 程序只能在机器人上链接。</p>
+
+<!-- ================================================================== 2 -->
+<h2 id="s-arch">2. 总体架构</h2>
+
+<figure>
+<svg viewBox="0 0 1000 540" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker>
+    <marker id="arR" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b91c1c"/></marker>
+  </defs>
+  <style>
+    .sens { fill:#f1f5f9; stroke:#94a3b8; } .cpp { fill:#dbeafe; stroke:#2563eb; } .py { fill:#dcfce7; stroke:#16a34a; }
+    .ext { fill:#fef3c7; stroke:#d97706; } .out { fill:#fee2e2; stroke:#dc2626; }
+    .ttl { font-size:14px; font-weight:700; fill:#0f172a; } .sb { font-size:11px; fill:#475569; }
+    .lb { font-size:11px; fill:#334155; } .ln { stroke:#475569; stroke-width:1.6; fill:none; marker-end:url(#ar); }
+    .lnR { stroke:#b91c1c; stroke-width:2.4; fill:none; marker-end:url(#arR); }
+    .dash { stroke-dasharray:5 4; }
+  </style>
+  <!-- column titles -->
+  <text x="110" y="20" text-anchor="middle" class="sb">机器人原有传感 / 接口</text>
+  <text x="390" y="20" text-anchor="middle" class="sb">本项目进程（PC2）</text>
+  <text x="680" y="20" text-anchor="middle" class="sb">上层 / 调试 / 执行</text>
+
+  <rect x="20" y="40" width="180" height="56" rx="8" class="sens"/>
+  <text x="110" y="64" text-anchor="middle" class="ttl">Livox Mid-360S</text>
+  <text x="110" y="82" text-anchor="middle" class="sb">头部（倒装）· UDP 点云 + IMU</text>
+
+  <rect x="20" y="168" width="180" height="66" rx="8" class="sens"/>
+  <text x="110" y="192" text-anchor="middle" class="ttl">本体关节</text>
+  <text x="110" y="210" text-anchor="middle" class="sb">hispeed_state（升降）</text>
+  <text x="110" y="225" text-anchor="middle" class="sb">lowstate / waistpitchstate</text>
+
+  <rect x="20" y="290" width="180" height="66" rx="8" class="sens"/>
+  <text x="110" y="314" text-anchor="middle" class="ttl">底盘 SLAMWARE</text>
+  <text x="110" y="332" text-anchor="middle" class="sb">odom ~20 Hz（轮速）</text>
+  <text x="110" y="347" text-anchor="middle" class="sb">scan 10 Hz（单线雷达）</text>
+
+  <rect x="20" y="420" width="180" height="66" rx="8" class="sens"/>
+  <text x="110" y="444" text-anchor="middle" class="ttl">遥控器 / 底盘 HTTP</text>
+  <text x="110" y="462" text-anchor="middle" class="sb">wirelesscontroller</text>
+  <text x="110" y="477" text-anchor="middle" class="sb">碰撞 / 悬崖事件</text>
+
+  <rect x="290" y="30" width="200" height="76" rx="8" class="cpp"/>
+  <text x="390" y="56" text-anchor="middle" class="ttl">g1d_lio</text>
+  <text x="390" y="74" text-anchor="middle" class="sb">帧聚合 · 自身点过滤</text>
+  <text x="390" y="90" text-anchor="middle" class="sb">FAST-LIO2 · 健康监测 · 10 Hz</text>
+
+  <rect x="290" y="160" width="200" height="130" rx="8" class="cpp"/>
+  <text x="390" y="186" text-anchor="middle" class="ttl">g1d_nav</text>
+  <text x="390" y="206" text-anchor="middle" class="sb">身体运动学 · 状态估计</text>
+  <text x="390" y="222" text-anchor="middle" class="sb">体素 / 底盘雷达 / 膨胀代价地图</text>
+  <text x="390" y="238" text-anchor="middle" class="sb">NavFn 全局规划 · MPPI 局部控制</text>
+  <text x="390" y="254" text-anchor="middle" class="sb">NavCore 状态机 · 20 Hz</text>
+
+  <rect x="290" y="380" width="200" height="110" rx="8" class="py"/>
+  <text x="390" y="406" text-anchor="middle" class="ttl">g1d_base_guard</text>
+  <text x="390" y="426" text-anchor="middle" class="sb">指令源选择 · 限幅 · 看门狗</text>
+  <text x="390" y="442" text-anchor="middle" class="sb">扫掠反射层 · 急停锁存</text>
+  <text x="390" y="458" text-anchor="middle" class="sb">遥控接管 · 加速度限制 · 30 Hz</text>
+
+  <rect x="600" y="30" width="160" height="76" rx="8" class="ext"/>
+  <text x="680" y="56" text-anchor="middle" class="ttl">NavGPT / nav_cli</text>
+  <text x="680" y="74" text-anchor="middle" class="sb">NavClient · NavGptBridge</text>
+  <text x="680" y="90" text-anchor="middle" class="sb">相对航点 + 图像时刻</text>
+
+  <rect x="600" y="170" width="160" height="110" rx="8" class="py"/>
+  <text x="680" y="196" text-anchor="middle" class="ttl">g1d_web</text>
+  <text x="680" y="216" text-anchor="middle" class="sb">DDS Hub · 控制锁</text>
+  <text x="680" y="232" text-anchor="middle" class="sb">建图导出 · 任务 · T1–T6</text>
+  <text x="680" y="248" text-anchor="middle" class="sb">HTTP + WebSocket :8080</text>
+
+  <rect x="830" y="190" width="150" height="70" rx="8" class="ext"/>
+  <text x="905" y="218" text-anchor="middle" class="ttl">浏览器</text>
+  <text x="905" y="236" text-anchor="middle" class="sb">three.js 3D / 俯视</text>
+
+  <rect x="600" y="400" width="200" height="70" rx="8" class="out"/>
+  <text x="700" y="426" text-anchor="middle" class="ttl">底盘运动控制</text>
+  <text x="700" y="446" text-anchor="middle" class="sb">rt/cmd_vel_no_limit</text>
+  <text x="700" y="461" text-anchor="middle" class="sb">（只有 guard 写入）</text>
+
+  <!-- arrows -->
+  <path d="M200,68 L288,68" class="ln"/><text x="244" y="62" text-anchor="middle" class="lb">UDP</text>
+  <path d="M390,106 L390,158" class="ln"/>
+  <text x="398" y="124" class="lb">lio_odom</text><text x="398" y="138" class="lb">registered_cloud</text><text x="398" y="152" class="lb">lio_health</text>
+  <path d="M200,201 L288,201" class="ln"/><text x="244" y="195" text-anchor="middle" class="lb">关节</text>
+  <path d="M200,312 L288,268" class="ln"/><text x="232" y="282" text-anchor="middle" class="lb">odom</text>
+  <path d="M200,338 L288,410" class="ln"/><text x="226" y="388" text-anchor="middle" class="lb">scan</text>
+  <path d="M200,453 L288,460" class="ln"/><text x="244" y="448" text-anchor="middle" class="lb">接管/事件</text>
+  <path d="M350,290 L350,378" class="ln"/>
+  <text x="300" y="320" class="lb" text-anchor="end">cmd_vel 20 Hz</text><text x="300" y="334" class="lb" text-anchor="end">obstacle_points</text>
+  <path d="M440,378 L440,292" class="ln"/>
+  <text x="448" y="330" class="lb">chassis_scan</text><text x="448" y="344" class="lb">guard_state</text>
+  <path d="M600,62 L492,188" class="ln"/><text x="560" y="110" class="lb">rt/nav/goal</text>
+  <path d="M492,208 L600,92" class="ln dash"/><text x="520" y="168" class="lb">status</text>
+  <path d="M492,236 L598,224" class="ln dash"/><text x="545" y="220" text-anchor="middle" class="lb">订阅 rt/nav/*</text>
+  <path d="M600,268 L492,404" class="ln"/><text x="560" y="330" class="lb">teleop / estop</text><text x="560" y="344" class="lb">param_set</text>
+  <path d="M828,225 L762,225" class="ln"/><path d="M762,240 L828,240" class="ln"/><text x="795" y="216" text-anchor="middle" class="lb">WebSocket</text>
+  <path d="M490,435 L598,435" class="lnR"/><text x="545" y="428" text-anchor="middle" class="lb" fill="#b91c1c">30 Hz</text>
+</svg>
+<figcaption>图 2-1 系统总体架构：所有进程只通过 DDS 话题交互，底盘指令只经 guard 写出（红色）。</figcaption>
+</figure>
+
+<h3 id="s-arch-proc">2.1 进程划分</h3>
+<table>
+  <tr><th>进程</th><th>语言</th><th>频率</th><th>职责</th><th>CPU 核（run_all.sh）</th></tr>
+  <tr><td><code>g1d_lio</code></td><td>C++17</td><td>10 Hz（帧）</td><td>Mid-360S 取数、按 100 ms 聚合成帧、自身点过滤、FAST-LIO2、健康监测、时钟映射</td><td><code>taskset -c 2,3</code></td></tr>
+  <tr><td><code>g1d_nav</code></td><td>C++17</td><td>20 Hz（控制）</td><td>身体运动学、LIO+轮速状态估计、局部 / 全局代价地图、NavFn、MPPI、目标状态机、调试输出</td><td><code>taskset -c 4,5</code></td></tr>
+  <tr><td><code>g1d_base_guard</code></td><td>Python</td><td>30 Hz</td><td><code>rt/cmd_vel_no_limit</code> 唯一写入者；限幅、看门狗、扫掠反射层、急停、遥控接管；底盘雷达转点云转发</td><td>—</td></tr>
+  <tr><td><code>g1d_web</code></td><td>Python + JS</td><td>20 Hz</td><td>浏览器调试台：可视化、点选导航、任务、Web 遥控、急停、验收测试、参数热更新、地图导出</td><td>—</td></tr>
+</table>
+
+<div class="key"><b>设计要点：</b>进程边界就是故障边界。导航算法（nav）、定位算法（lio）和安全逻辑（guard）分处不同进程，任何一个崩溃都不会让底盘失控：nav 停发指令后 guard 在 0.3 s 内减速停车；guard 本身退出后底盘依靠自身的指令超时停车。</div>
+
+<h3 id="s-arch-dds">2.2 通信方式（DDS）</h3>
+<ul>
+  <li>全部进程用 <code>ChannelFactory::Instance()->Init(domain, net_if)</code>（C++）或 <code>ChannelFactoryInitialize</code>（Python）初始化宇树 SDK2 的 CycloneDDS 通道，域默认为 0，网卡为 <code>system.net_if</code>（<code>eth0</code>）。</li>
+  <li>消息类型全部使用 SDK2 自带的 ROS 2 兼容 IDL：<code>Odometry_</code>、<code>PointCloud2_</code>、<code>Twist_</code>、<code>String_</code>、<code>OccupancyGrid_</code>、<code>LowState_</code> 等。复杂结构（目标、状态、健康、调试、参数）一律用 <code>String_</code> 承载 JSON，便于扩展和人工查看。</li>
+  <li>唯一的例外是底盘雷达 <code>LaserScan_</code>：SDK2 C++ 侧没有现成类型支持，所以由 Python guard（复制了真机验证过的 <code>slamware_idl.py</code> 定义）订阅后转成 <code>base_link</code> 下的 <code>PointCloud2_</code>，再发布到 <code>rt/nav/chassis_scan</code> 给 C++ 使用。这样 C++ 不需要运行 idlc 生成代码。</li>
+  <li>C++ 侧的 DDS 回调线程只负责把消息塞进 <code>bus::Mailbox</code>（带上限的线程安全队列），主循环每个周期 <code>drain()</code> 一次，算法核心因此是单线程的。</li>
+  <li><code>deploy/cyclonedds.xml</code> 固定网卡并加大接收缓冲，由环境变量 <code>CYCLONEDDS_URI</code> 引用。</li>
+</ul>
+
+<h3 id="s-arch-boot">2.3 启动与退出顺序</h3>
+<ol class="steps green">
+  <li><b>guard 最先启动</b>：用 DDS 发现（<code>dds_discovery.find_writers</code>）检查 <code>rt/cmd_vel_no_limit</code> 是否已有其他写入者，默认 <code>other_writers: refuse</code>，即拒绝启动。随后调用底盘 HTTP 中止当前动作。启动后保持静默，不发布任何指令。</li>
+  <li><b>web</b> 随后启动（可选）。</li>
+  <li><b>lio</b> 启动，机器人需<b>静止约 2 s</b>：FAST-LIO2 用前几帧的 IMU 数据估计重力方向和零偏（<code>INIT_TIME</code>），之后 <code>ekf_inited</code> 才为真。</li>
+  <li><b>nav</b> 最后启动：收到第一帧有效 LIO 后锚定 <code>odom</code> 原点。</li>
+  <li>退出时按相反顺序：<code>run_all.sh</code> 的 <code>cleanup</code> 倒序向各进程发 SIGINT，nav 退出前发一条零速，guard 最后退出，若仍在运动则连发 3 次零速。</li>
+</ol>
+
+<!-- ================================================================== 3 -->
+<h2 id="s-frames">3. 坐标系与位姿链</h2>
+
+<p>头部雷达会随升降和腰部一起运动，所以"雷达位姿"和"底盘位姿"之间不是固定外参，而是一条随关节变化的运动链。理解这条链是理解整个系统的关键。</p>
+
+<table>
+  <tr><th>坐标系</th><th>定义</th><th>谁在用</th></tr>
+  <tr><td><code>odom</code></td><td>导航坐标系。原点是 LIO 第一帧有效时 <code>base_link</code> 的位置，z 竖直向上，<b>z=0 即地面</b></td><td>目标、路径、代价地图、Web 地图</td></tr>
+  <tr><td><code>odom_lio</code></td><td>FAST-LIO2 的世界系，即启动时 Mid-360S 内置 IMU 的位姿（重力对齐）</td><td><code>lio_odom</code>、<code>registered_cloud</code></td></tr>
+  <tr><td><code>base_link</code></td><td>底盘中心在地面的投影，x 前、y 左、逆时针为正</td><td>NavGPT 航点、障碍点、底盘雷达点、guard</td></tr>
+  <tr><td><code>head_link</code></td><td>头部，经 URDF 链由关节反馈算出</td><td>自身点过滤框</td></tr>
+  <tr><td><code>livox</code> / <code>livox_imu</code></td><td>Mid-360S 雷达系（倒装）与其内置 IMU</td><td>FAST-LIO2 内部</td></tr>
+</table>
+
+<div class="chain">
+  <span class="f">odom</span><span class="t">T_odom_lio<br>首帧锚定</span>
+  <span class="f">odom_lio</span><span class="t">T_lio_imu<br>FAST-LIO2 输出</span>
+  <span class="f">livox_imu</span><span class="t">T_imu_livox<br>出厂外参</span>
+  <span class="f">livox</span><span class="t">head_to_livox⁻¹<br>需标定</span>
+  <span class="f">head_link</span><span class="t">URDF 链⁻¹<br>升降 / 腰俯仰 / 腰偏航</span>
+  <span class="f">base_link</span>
+</div>
+
+<p>其中 <code>BodyKinematics::baseToImu(joints)</code> 计算 <code>T_base_imu = T_base_head · T_head_livox · T_livox_imu</code>。核心公式只有两条：</p>
+<div class="formula">锚定（第一帧有效 LIO，认为底盘水平地放在地面上）：
+    T_odom_lio = T_base_imu(q₀) · T_lio_imu(t₀)⁻¹          → 使 t₀ 时刻 base_link 恰好位于 odom 原点
+
+此后每一帧：
+    T_odom_base(t) = T_odom_lio · T_lio_imu(t) · T_base_imu(q(t))⁻¹     → 投影为 2D 位姿 (x, y, yaw)</div>
+
+<p>URDF 链（<code>body_kinematics.cpp</code>）中的固定偏移直接取自机器人 URDF：</p>
+<pre><code>base_link ─(base_to_agv_z, 待标定)→ AGV_link
+  ─ LZ_ot_Joint  z +0.5275
+  ─ LZ_mt_Joint  z +0.010 + h/2      ┐ 升降两级各伸出一半：
+  ─ LZ_it_Joint  z +0.018 + h/2      ┘ h = clamp(lift_scale·hispeed_state.y + lift_offset, 0, 0.42)
+  ─ Pitching_Joint z +0.008
+  ─ Yaw_Joint    (0.0555, 0, 0.066)，绕 y 轴转 waist_pitch      ← rt/waistpitchstate
+  ─ torso_Joint  (−0.0024, 0, 0.104)，绕 z 轴转 waist_yaw       ← rt/lowstate 12 号电机
+  ─ head_joint   (0.004, 0, −0.054)  → head_link
+  ─ head_to_livox  xyz [0.05, 0, 0.55]，rpy [π, −0.04, 0]（倒装，待标定）→ livox
+  ─ livox→imu    FAST-LIO mid360.yaml 出厂值 extrinsic_T [−0.011, −0.023, 0.044]</code></pre>
+
+<div class="warn"><b>为什么要"姿态锁定"：</b>如果导航中手臂、腰部或升降在动，头部 IMU 的运动就不全是底盘运动。只要运动学模型有一点误差，就会被误当成底盘位移。所以导航时要求身体保持在标定好的"导航姿态"，偏离 <code>lock_tolerance</code>（腰 2°、手臂 5°、升降 1 cm、升降速度 5 mm/s）立即以 <code>body_moved</code> 结束目标。</div>
+
+<!-- ================================================================== 4 -->
+<h2 id="s-journey">4. 一帧数据的完整旅程</h2>
+
+<p>下面按时间顺序，跟踪一帧雷达数据从传感器到底盘电机的全过程。这是理解各模块如何配合的最快方式。</p>
+
+<ol class="steps">
+  <li><b>雷达出点（g1d_lio，Livox 线程）</b>：Livox-SDK2 回调收到 Cartesian High 点包（每包若干点 + 起始时间戳 + 点间隔）和 IMU 包（200 Hz，加速度单位 g）。IMU 立即推入 FAST-LIO 缓冲，同时喂给 <code>ClockMapper</code> 估计"主机时间 − 雷达时间"。</li>
+  <li><b>拼帧</b>：<code>FrameAggregator</code> 按 100 ms 把点包拼成一帧，给每个点算出相对帧起点的时间偏移（毫秒），用于运动去畸变。</li>
+  <li><b>预处理</b>：去掉非正常回波（tag）、重复点、0.6 m 以内（打到自己）和 60 m 以外的点，再删掉落在"自身点过滤框"（头、躯干、立柱、收拢的手臂）内的点。</li>
+  <li><b>FAST-LIO2</b>（g1d_lio 主线程）：IMU 前向积分 + 反向去畸变 → 降采样 → 在 ikd-Tree 地图里找最近 5 点拟合平面 → 迭代误差状态卡尔曼滤波更新位姿 → 把新点加入地图。仿真中单帧约 7 ms。</li>
+  <li><b>发布</b>：<code>rt/nav/lio_odom</code>（IMU 在 <code>odom_lio</code> 的位姿）、<code>rt/nav/registered_cloud</code>（去畸变后的当前帧，世界系，5 cm 降采样）、<code>rt/nav/lio_health</code>（JSON），三者使用<b>同一个主机时间戳</b>。</li>
+  <li><b>配对（g1d_nav 主循环）</b>：把点云和同一时间戳（误差 &lt; 1 ms）的 LIO 位姿配成 <code>LioInput</code>，并检查健康消息是否 <code>ok</code> 且时间接近。</li>
+  <li><b>状态估计</b>：用当前关节算 <code>T_base_imu</code>，得到底盘 2D 位姿；与轮速里程计做一致性检查；在两帧 LIO 之间用轮速增量外推。</li>
+  <li><b>更新地图</b>：点云变换到 <code>odom</code>，送入局部（6×6 m）和全局（20×20 m）代价地图的体素层：先三维射线清除，再标记障碍。同时生成 <code>base_link</code> 下的 3 m 内障碍点，发布给 guard 做反射层。</li>
+  <li><b>控制周期（20 Hz）</b>：滚动地图原点 → 合成代价并膨胀 → 状态机检查安全条件 → 必要时 NavFn 重规划（每 1 s 或路径被堵）→ MPPI 采样 1000 条轨迹求最优速度 → 发布 <code>rt/nav/cmd_vel</code>。</li>
+  <li><b>guard（30 Hz）</b>：取最新的 nav 指令 → 限幅 → 检查底盘雷达和障碍点是否新鲜 → 整车矩形沿指令圆弧扫掠求净距 → 减速 / 停车 → 加速度限制 → 写入 <code>rt/cmd_vel_no_limit</code>。</li>
+</ol>
+
+<div class="note"><b>延迟预算：</b>雷达帧 100 ms（帧内去畸变）+ LIO 处理约 10 ms + nav 周期 50 ms + guard 周期 33 ms。nav 用轮速把 LIO 位姿外推到"当前时刻"（最多 0.3 s），所以控制用的位姿延迟远小于 100 ms。障碍点只有在新 LIO 帧到达时才更新（10 Hz），guard 认为超过 0.5 s 未更新即"过期"。</div>
+
+<!-- ================================================================== 5 -->
+<h2 id="s-lio">5. g1d_lio：激光里程计</h2>
+
+<p>源码：<code>src/apps/g1d_lio_main.cpp</code>、<code>src/apps/livox_sdk_source.*</code>、<code>src/lio/*</code>、<code>third_party/fast_lio/*</code>。</p>
+
+<h3 id="s-lio-src">5.1 数据源（<code>lidar.source</code>）</h3>
+<table>
+  <tr><th>取值</th><th>方式</th><th>何时使用</th></tr>
+  <tr><td><code>livox_sdk2</code>（默认）</td><td><code>LivoxSdkSource</code> 直连雷达：<code>LivoxLidarSdkInit(config/mid360s_config.json, host_ip)</code>，雷达上线回调里设为 Normal 工作模式；点云回调只接受 <code>kLivoxLidarCartesianCoordinateHighData</code>（毫米整数坐标），IMU 回调读陀螺（rad/s）和加速度（g）</td><td>雷达没有被宇树自带服务占用。要求 Livox-SDK2 ≥ 1.3.1（才支持 Mid-360S），编译选项 <code>G1D_WITH_LIVOX=ON</code></td></tr>
+  <tr><td><code>unitree_topic</code></td><td>订阅宇树服务发布的 <code>rt/utlidar/cloud_livox_mid360</code>（<code>PointCloud2_</code>）和 <code>imu_livox_mid360</code>（<code>Imu_</code>）。<code>cloudToFrame()</code> 自动识别逐点时间字段：<code>timestamp</code>（float64，秒或纳秒）、<code>time</code>（float32 秒）、<code>offset_time</code>（uint32 纳秒）；都没有时不做去畸变</td><td>P0 阶段 <code>check_interfaces.py</code> 发现宇树服务已在发布雷达数据</td></tr>
+</table>
+
+<h3 id="s-lio-agg">5.2 帧聚合与逐点时间（<code>FrameAggregator</code>）</h3>
+<p>Livox 雷达是非重复扫描，数据以小包连续到达，不存在天然的"一圈"。FAST-LIO 需要一帧点云及每个点的采集时刻，以便用 IMU 轨迹把每个点校正到帧末时刻（运动去畸变）。</p>
+<div class="formula">点间隔(ns) = packet.time_interval × 100 / 点数        （time_interval 单位为 0.1 µs）
+第 i 个点时间 t_i = packet.timestamp_ns + i × 点间隔
+t_i ≥ 帧起点 + 100 ms  → 输出当前帧；下一帧起点 = 上一帧起点 + 100 ms（帧首尾相接，不留缝）
+点的 offset_ms = (t_i − 帧起点) / 1e6                   → 存入 PCL 点的 curvature 字段（沿用 FAST-LIO 约定）</div>
+<p>若时间戳倒退超过一帧（雷达重启或时钟跳变），丢弃未完成的半帧并重新开始。</p>
+
+<h3 id="s-lio-pre">5.3 预处理与自身点过滤（<code>preprocessFrame</code>）</h3>
+<ol class="steps">
+  <li><b>回波标签</b>：只保留 Livox tag 第 4–5 位为 <code>0x00</code> 或 <code>0x10</code> 的正常回波（与 FAST-LIO 原版判断相同），过滤雨雾、拖尾等噪点。</li>
+  <li><b>抽稀</b>：每 <code>point_filter_num</code>（默认 1，即不抽稀）个有效点取一个。</li>
+  <li><b>去重</b>：与前一点坐标完全相同的点丢弃。</li>
+  <li><b>距离</b>：<code>r ≤ blind</code>（0.6 m）或 <code>r &gt; max_range</code>（60 m）的点丢弃。</li>
+  <li><b>自身点过滤</b>：<code>SelfFilter</code> 用 <code>head_to_livox</code> 把点变换到 <code>head_link</code>，若落在任一 <code>self_filter.boxes</code> 盒子 <code>[xmin,xmax,ymin,ymax,zmin,zmax]</code> 内则删除。默认两个盒子：头 + 躯干 + 立柱，以及收拢的手臂。这样机器人自己既不会成为 LIO 的"特征"，也不会成为代价地图里的"障碍"。</li>
+</ol>
+
+<h3 id="s-lio-fl">5.4 FAST-LIO2 内部流程（<code>fast_lio_api::process</code>）</h3>
+<p>FAST-LIO2 的算法代码（IESKF、ikd-Tree、IMU 处理）保持上游 <code>7cc4175</code> 原样，只把 ROS 节点 <code>laserMapping.cpp</code> 改造成可嵌入的 5 个函数：<code>init / push_imu / push_scan / process / reset</code>。上游使用全局变量，因此每个进程只能有一个 <code>LioEstimator</code>（构造函数里用原子计数强制检查）。</p>
+<ol class="steps purple">
+  <li><b>同步（<code>sync_packages</code>）</b>：取最早一帧点云，帧末时刻 = 帧起点 + 最后一个点的偏移；等到 IMU 缓冲覆盖到帧末才处理，并取出这段时间内的全部 IMU。</li>
+  <li><b>IMU 处理（<code>ImuProcess::Process</code>）</b>：启动阶段用静止 IMU 均值初始化重力方向、陀螺零偏；之后对每个 IMU 采样做<b>前向传播</b>（状态与协方差），再按逐点时间<b>反向传播</b>，把帧内每个点补偿到帧末时刻的 IMU 位姿（去畸变）。</li>
+  <li><b>地图视野裁剪（<code>lasermap_fov_segment</code>）</b>：机器人移动到局部地图边界附近时，删除 <code>cube_side_length</code>（1000 m）立方体以外的地图点。</li>
+  <li><b>降采样</b>：当前帧按 <code>filter_size_surf</code>（0.3 m）体素降采样。第一帧直接建立 ikd-Tree。</li>
+  <li><b>迭代误差状态卡尔曼滤波（<code>update_iterated_dyn_share_modified</code>）</b>：每次迭代对每个点（OpenMP 并行）在 ikd-Tree 中找 5 个最近邻，最远邻平方距离 ≤ 5 m² 时用最小二乘拟合平面（<code>esti_plane</code>，阈值 0.1 m），点到平面距离作为观测残差，筛掉 <code>1 − 0.9·|d|/√‖p‖ ≤ 0.9</code> 的点；以流形上的 IESKF 求解 23 维状态（位置、姿态、速度、陀螺 / 加速度零偏、重力、雷达-IMU 外参），最多迭代 <code>max_iteration</code>（3）次。</li>
+  <li><b>地图增量更新（<code>map_incremental</code>）</b>：把降采样后的点变换到世界系，按 <code>filter_size_map</code>（0.4 m）体素判断是否需要加入，增量插入 ikd-Tree，地图无需重建。</li>
+  <li><b>输出（本项目新增）</b>：帧末时刻、IMU 位姿 / 速度 / 零偏 / 重力、6×6 位姿协方差、输入 / 降采样 / 有效点数、平均残差、<b>法向量矩阵最小特征值</b>，以及去畸变后的整帧世界系点云。</li>
+</ol>
+<p><code>LioEstimator::process()</code> 再把帧末雷达时间映射成主机时间、算出雷达原点在世界系的位置（供射线清除用）、把点云按 <code>publish_cloud_voxel</code>（5 cm）降采样，并更新健康状态。</p>
+
+<h3 id="s-lio-health">5.5 健康监测与退化检测（<code>LioHealth</code>）</h3>
+<table>
+  <tr><th>错误</th><th>判定条件（默认值）</th><th>典型原因</th></tr>
+  <tr><td><code>few_points</code></td><td>有效匹配点 &lt; 300</td><td>雷达被遮挡、空旷场地</td></tr>
+  <tr><td><code>slow</code></td><td>单帧处理 &gt; 0.15 s</td><td>CPU 过载</td></tr>
+  <tr><td><code>nan</code></td><td>位置或姿态出现非有限值</td><td>滤波发散（直接判为不健康）</td></tr>
+  <tr><td><code>jump_translation</code> / <code>jump_yaw</code></td><td>与上一健康帧相比位移 &gt; 0.3 m 或偏航 &gt; 15°</td><td>误匹配、跳变</td></tr>
+  <tr><td><code>z_drift</code></td><td>高度相对首帧漂移 &gt; 0.3 m（轮式底盘在平地上不应有高度变化）</td><td>累计漂移、外参错误</td></tr>
+  <tr><td><code>degenerate</code>（标志）</td><td>所有匹配平面法向量 n 的 <code>mean(n·nᵀ)</code> 最小特征值 &lt; 0.02</td><td>长走廊、单面墙：某个方向没有几何约束</td></tr>
+</table>
+<p>单帧异常可以容忍；连续 <code>bad_frames_to_fail</code>（3）帧异常，或 EKF 尚未初始化，或出现 NaN，则 <code>ok=false</code>。g1d_nav 在 <code>require_lio: true</code> 时会以 <code>lio_lost</code> 终止导航。</p>
+<div class="tip"><b>退化检测的直观含义：</b>若所有匹配到的平面法向量都近似垂直于走廊方向，那么 <code>Σ n nᵀ</code> 在走廊方向上的分量接近 0，滤波在这个方向上缺少约束，位置会"滑动"。最小特征值就是这种约束强度的度量。</div>
+
+<h3 id="s-lio-clock">5.6 时钟映射（<code>ClockMapper</code>）</h3>
+<p>Mid-360S 的时间戳通常是雷达上电后的时间，与主机时钟无关。而 NavGPT 的延迟补偿、点云与位姿配对都需要统一的主机时间。做法：</p>
+<div class="formula">每个 IMU 包：offset_k = host_recv_time − sensor_stamp        （传输排队只会让它变大）
+offset = 最近 10 s 内 offset_k 的最小值                         （单调队列 O(1) 维护）
+host_time(sensor_t) = sensor_t + offset
+若 offset 的变化超过 50 ms → jumps += 1（时钟重置或漂移，在 lio_health 中报告）</div>
+<p>最小值剔除了网络和调度带来的正向抖动，得到"零排队延迟"下的偏移估计。<code>lio_health</code> 中的 <code>clock_offset</code> 应保持稳定，<code>clock_jumps</code> 应为 0。</p>
+
+<!-- ================================================================== 6 -->
+<h2 id="s-nav">6. g1d_nav：导航核心</h2>
+<p>源码：<code>src/apps/g1d_nav_main.cpp</code>（DDS 适配）、<code>src/nav/*</code>（算法核心 <code>NavCore</code>）、<code>third_party/nav2/*</code>（Nav2 原码）。<code>NavCore</code> 不依赖 DDS，同一份代码同时用于实机程序、C++ 闭环仿真和单元测试。</p>
+
+<h3 id="s-nav-loop">6.1 主循环（20 Hz，<code>Rate(mppi.rate_hz)</code>）</h3>
+<ol class="steps">
+  <li>把最新关节状态交给 <code>core.onJointState()</code>（升降高度 / 速度、腰偏航、腰俯仰、14 个手臂关节）。</li>
+  <li>处理全部轮速里程计消息 <code>onWheelOdom()</code>。SLAMWARE 的时间戳比主机慢约 181 s，所以<b>一律用接收时间</b>。</li>
+  <li>LIO 位姿放入最近 30 条的历史，配准点云按时间戳与位姿配对后调用 <code>onLio()</code>。</li>
+  <li>底盘雷达点（<code>base_link</code>）反变换到雷达安装位置，重建为 720 束的伪 <code>LaserScan</code>（每束取最近距离），调用 <code>onScan()</code>。</li>
+  <li>处理目标 JSON、急停、guard 状态（<code>blocked / estop / manual</code>）。</li>
+  <li><b><code>core.tick(now)</code></b>：状态估计 → 局部地图更新 → 状态机 → 速度指令。</li>
+  <li>发布：<code>cmd_vel</code>（活动中及结束后 1 s 内）、<code>status</code>（10 Hz 或状态变化时）、<code>base_odom</code>、<code>obstacle_points</code>（有新 LIO 帧时）、<code>local_costmap</code>（2 Hz）、<code>global_costmap</code>（1 Hz）、<code>debug</code>（5 Hz）、<code>param_state</code>（1 Hz 或收到修改时）。</li>
+</ol>
+
+<h3 id="s-nav-kin">6.2 身体运动学与姿态锁定（<code>BodyKinematics</code>）</h3>
+<p><code>baseToHead(q)</code> 按第 3 节的 URDF 链连乘齐次变换；<code>baseToImu(q)</code> 再乘上 <code>head_to_livox</code> 和雷达-IMU 外参。<code>checkLock(q, reference)</code> 的检查项如下，任何一项超限都会让 <code>locked=false</code> 并在 <code>lock_reasons</code> 中说明原因：</p>
+<table>
+  <tr><th>检查</th><th>条件</th><th>原因字符串</th></tr>
+  <tr><td>腰偏航</td><td>|waist_yaw| &gt; 2°</td><td><code>waist_yaw</code></td></tr>
+  <tr><td>腰俯仰</td><td>|waist_pitch − nav_pose.waist_pitch| &gt; 2°</td><td><code>waist_pitch</code></td></tr>
+  <tr><td>升降运动</td><td>|lift_speed| &gt; 0.005</td><td><code>lift_moving</code></td></tr>
+  <tr><td>升降高度变化</td><td>与开始导航时的参考高度相差 &gt; 1 cm</td><td><code>lift_height</code></td></tr>
+  <tr><td>手臂</td><td>任一关节与 <code>arm_tuck</code> 相差 &gt; 5°（<code>arm_tuck</code> 为空则跳过）</td><td><code>arm_15</code> … <code>arm_28</code></td></tr>
+</table>
+<p>空闲时 NavCore 不断刷新参考关节；开始目标时检查一次（失败为 <code>body_not_locked</code>），导航过程中每个周期检查（失败为 <code>body_moved</code>）。没有收到某类关节话题时，对应检查自动跳过（例如旧版没有 <code>rt/waistpitchstate</code>）。</p>
+
+<h3 id="s-nav-est">6.3 状态估计（<code>StateEstimator</code>）</h3>
+<p>目标：在 10 Hz、带延迟的 LIO 和约 20 Hz 的轮速之间，给 20 Hz 控制提供连续、低延迟、无跳变的 <code>base_link</code> 位姿。</p>
+
+<h4>(1) 收到 LIO 帧</h4>
+<ul>
+  <li>若尚未锚定，计算 <code>T_odom_lio</code>（见第 3 节）。</li>
+  <li>计算 <code>T_odom_base</code>，投影成 <code>Pose2D</code>，保存为"LIO 锚点"（时间戳 + 位姿），写入 10 s 的 LIO 历史；用相邻两帧之差计算 LIO 速度。</li>
+  <li><b>一致性检查</b>：比较过去 <code>consistency_window_s</code>（2 s）内 LIO 的位姿增量和轮速里程计的增量。平移差 &gt; 0.3 m 或偏航差 &gt; 10° → <code>odom_consistent=false</code>（打滑、被推动、LIO 漂移时会出现）。该标志目前只在状态中报告，不终止导航。</li>
+</ul>
+
+<h4>(2) 每个控制周期 <code>estimate(now)</code></h4>
+<div class="formula">lio_ok   = LIO 健康 且 now − 锚点时间 ≤ lio_timeout_s (0.5 s)
+wheel_ok = now − 最近轮速时间 ≤ wheel_timeout_s (0.3 s)
+
+若 lio_ok：
+    pose = 锚点位姿
+    若 wheel_ok：pose = pose ⊕ (轮速位姿(锚点时刻)⁻¹ ⊕ 最新轮速位姿)     ← 轮速增量叠加到 LIO 锚点
+                 速度 = 轮速速度，source = "lio+wheel"
+    否则：      速度 = LIO 差分速度，source = "lio"
+    dt = clamp(now − 最近数据时刻, 0, max_extrapolation_s = 0.3)
+    pose = pose ⊕ (v·dt, 0, w·dt)                                         ← 匀速外推到当前
+    valid = true
+否则若 allow_wheel_only（默认 false）：用轮速从最后一个 LIO 锚点推算，source = "wheel"
+否则 valid = false                                                        ← 定位丢失</div>
+<p>每个周期的估计值写入 10 s 的位姿历史 <code>history_</code>，供 <code>poseAt(stamp)</code> 查询任意过去时刻的位姿（线性插值）。这正是 NavGPT 延迟补偿的基础（第 8 节）。</p>
+<div class="note"><b>为什么轮速只用"增量"：</b>轮速里程计长期会漂移，但短时间增量很准、延迟低；LIO 长期准确但有 100 ms 帧延迟。每来一帧 LIO 就重新锚定，轮速只负责填补两帧之间的空白，两者的优点都保留了，也不会累积轮速误差。</div>
+
+<h3 id="s-nav-cm">6.4 代价地图</h3>
+<p>两张地图都以机器人为中心滚动，结构相同（<code>LayeredCostmap</code>），参数不同：</p>
+<table>
+  <tr><th>地图</th><th>尺寸 / 分辨率</th><th>体素层范围</th><th>更新</th><th>用途</th></tr>
+  <tr><td>local</td><td>6 × 6 m，0.05 m（120×120）</td><td>标记 5 m，射线 6 m，每点清除</td><td>每个控制周期</td><td>MPPI 的 CostCritic、路径堵塞检查、旋转 / 直线段安全检查、可通行扇区</td></tr>
+  <tr><td>global</td><td>20 × 20 m，0.1 m（200×200）</td><td>标记 8 m，射线 9 m，每 2 点清除一次</td><td>开始目标和重规划前（间隔 ≥ 0.2 s）</td><td>NavFn 全局规划、目标合法性检查</td></tr>
+</table>
+
+<h4>每次 <code>update(robot_pose)</code> 的步骤</h4>
+<ol class="steps">
+  <li><b>滚动</b>：主栅格和各图层原点移到 <code>robot − size/2</code>，按整格平移，重叠区保留，新进入的格子置为初值（<code>RollingGrid::updateOrigin</code>，语义与 Nav2 <code>Costmap2D::updateOrigin</code> 相同）。</li>
+  <li><b>衰减</b>：<code>decay_s &gt; 0</code> 时清除过旧的体素列。默认 <code>decay_s: 0</code>，障碍一直保留，直到被射线清除。这样障碍进入雷达 0.6 m 近距离盲区后仍然存在。</li>
+  <li><b>清除车体</b>：机器人轮廓内的体素和雷达格清零（机器人占据的空间不可能是障碍）。</li>
+  <li><b>合成</b>：主栅格重置为 FREE(0)，体素层与底盘雷达层的占据格写入 LETHAL(254)。</li>
+  <li><b>膨胀</b>：InflationLayer 只从障碍边界格出发，用预计算的圆形核叠加代价（取最大值）。</li>
+</ol>
+
+<h4>VoxelLayer：为什么能看见悬空障碍</h4>
+<p>每个 2D 栅格存一个 <code>uint32</code> 位掩码，表示这一列在各高度层是否有障碍：<code>z_min</code> 0.08 m 到 <code>z_max</code> 1.85 m、每层 0.1 m，共 18 层。另有命中计数和时间戳。</p>
+<ul>
+  <li><b>标记</b>：点在 <code>[0.08, 1.85)</code> 高度带内且距离 ≤ 5 m 时，置位对应列的对应层。地面点（z &lt; 0.08）不会被标记，机器人头顶以上（≥ 1.85 m）也不考虑。</li>
+  <li><b>清除</b>：从雷达原点到每个点（最远 6 m）做 <b>Amanatides–Woo 三维体素遍历</b>，只清除射线<b>真正穿过</b>的（列, 层）位，终点格保留。</li>
+  <li><b>先清后标</b>：同一帧先做全部射线清除再标记，所以本帧的点不会被本帧的射线擦掉。</li>
+  <li>列中任一位为 1（且命中数 ≥ <code>min_points_per_column</code>）就写成 LETHAL。</li>
+</ul>
+
+<figure>
+<svg viewBox="0 0 960 340" xmlns="http://www.w3.org/2000/svg">
+  <style>.g{stroke:#cbd5e1;stroke-width:1} .lbl{font-size:12px;fill:#334155} .ttl2{font-size:13px;font-weight:700;fill:#0f172a}</style>
+  <!-- floor -->
+  <line x1="20" y1="300" x2="880" y2="300" stroke="#334155" stroke-width="2"/>
+  <text x="870" y="318" text-anchor="end" class="lbl">地面 z = 0</text>
+  <!-- z band -->
+  <line x1="20" y1="284" x2="660" y2="284" stroke="#94a3b8" stroke-dasharray="4 4"/>
+  <text x="420" y="296" class="lbl">z_min 0.08 m（以下不标记，地面不算障碍）</text>
+  <!-- robot -->
+  <rect x="20" y="270" width="50" height="28" fill="#e2e8f0" stroke="#64748b"/>
+  <rect x="38" y="90" width="14" height="180" fill="#e2e8f0" stroke="#64748b"/>
+  <circle cx="45" cy="64" r="12" fill="#2563eb"/>
+  <text x="64" y="58" class="lbl">Mid-360S（头部，约 1.2 m）</text>
+  <line x1="70" y1="280" x2="660" y2="280" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="6 3"/>
+  <text x="300" y="275" class="lbl" fill="#b45309">底盘单线雷达扫描面 z≈0.10 m：看不到桌面</text>
+  <!-- table -->
+  <rect x="190" y="150" width="100" height="8" fill="#92400e"/>
+  <rect x="192" y="158" width="5" height="142" fill="#b45309" opacity="0.5"/>
+  <rect x="283" y="158" width="5" height="142" fill="#b45309" opacity="0.5"/>
+  <text x="240" y="143" text-anchor="middle" class="ttl2">桌面 0.75 m</text>
+  <!-- ray to far floor -->
+  <line x1="45" y1="64" x2="840" y2="300" stroke="#16a34a" stroke-width="2"/>
+  <circle cx="840" cy="300" r="4" fill="#16a34a"/>
+  <text x="310" y="226" class="lbl" fill="#15803d">射线越过桌面上方，打到远处地面</text>
+  <!-- ray to table -->
+  <line x1="45" y1="64" x2="230" y2="150" stroke="#dc2626" stroke-width="2"/>
+  <circle cx="230" cy="150" r="4" fill="#dc2626"/>
+  <text x="96" y="122" class="lbl" fill="#b91c1c">打到桌沿 → 标记</text>
+  <!-- inset column -->
+  <text x="720" y="22" text-anchor="middle" class="ttl2">桌面所在栅格的体素列（18 层）</text>
+  <g transform="translate(680,32)">
+    <!-- 18 layers, each 12px tall, index 0 at bottom (y=204) -->
+    <rect x="0" y="0" width="80" height="216" fill="#fff" stroke="#94a3b8"/>
+    <g fill="#f8fafc" stroke="#e2e8f0">
+      <rect x="0" y="0" width="80" height="12"/><rect x="0" y="12" width="80" height="12"/><rect x="0" y="24" width="80" height="12"/>
+      <rect x="0" y="36" width="80" height="12"/><rect x="0" y="48" width="80" height="12"/><rect x="0" y="60" width="80" height="12"/>
+      <rect x="0" y="72" width="80" height="12"/><rect x="0" y="84" width="80" height="12"/><rect x="0" y="96" width="80" height="12"/>
+      <rect x="0" y="108" width="80" height="12"/><rect x="0" y="120" width="80" height="12"/><rect x="0" y="132" width="80" height="12"/>
+      <rect x="0" y="144" width="80" height="12"/><rect x="0" y="156" width="80" height="12"/><rect x="0" y="168" width="80" height="12"/>
+      <rect x="0" y="180" width="80" height="12"/><rect x="0" y="192" width="80" height="12"/><rect x="0" y="204" width="80" height="12"/>
+    </g>
+    <!-- layer 6 (0.68-0.78): y = 204 - 6*12 = 132 -->
+    <rect x="0" y="132" width="80" height="12" fill="#dc2626"/>
+    <!-- layers 7,8 cleared: y=120, 108 -->
+    <rect x="0" y="108" width="80" height="24" fill="#bbf7d0" stroke="#16a34a"/>
+    <text x="88" y="142" class="lbl" fill="#b91c1c">第 6 层 0.68–0.78 m：保留 ✔</text>
+    <text x="88" y="124" class="lbl" fill="#15803d">第 7–8 层：射线穿过 → 清除</text>
+    <text x="88" y="214" class="lbl">第 0 层 0.08 m</text>
+    <text x="88" y="10" class="lbl">第 17 层 1.85 m</text>
+  </g>
+</svg>
+<figcaption>图 6-1 三维射线清除只清除射线实际穿过的高度层。二维代价地图的射线会把整格清空，桌面就"消失"了；体素层不会。</figcaption>
+</figure>
+
+<h4>ScanLayer：底盘单线雷达</h4>
+<p>沿每束激光以半格步长做二维清除（终点格除外），终点在 4 m 内则标记为障碍。<code>inf</code> 或超量程的读数默认视为无效（<code>inf_is_valid: false</code>），不做清除。它补上了头部雷达看不到的近地低矮障碍（头部雷达 0.6 m 盲区内、或被车身遮挡的区域）。</p>
+
+<h4>InflationLayer：膨胀</h4>
+<p>与 Nav2 <code>InflationLayer::computeCost</code> 完全相同的公式。内切半径由轮廓 <code>[±0.30, ±0.28]</code> 计算得 0.28 m：</p>
+<div class="formula">d = 0                 → 254 LETHAL（障碍本身）
+d ≤ r_inscribed(0.28) → 253 INSCRIBED（机器人中心在此必然碰撞）
+d ≤ radius(0.55)      → cost = 252 · exp(−cost_scaling_factor(3.0) · (d − 0.28))
+d > 0.55              → 0 FREE</div>
+<p><code>InflationLayer</code> 同时实现了 MPPI 需要的 <code>InflationLayerInterface</code>（提供 <code>cost_scaling_factor</code> 和内切半径），所以 Nav2 MPPI 的 CostCritic 可以直接使用。发布为 <code>OccupancyGrid_</code> 时采用与 Nav2 <code>Costmap2DPublisher</code> 相同的映射：255→−1，254→100，253→99，其余线性映射到 1–98。</p>
+
+<h3 id="s-nav-plan">6.5 NavFn 全局规划（<code>GlobalPlanner</code>）</h3>
+
+<h4>目标合法性检查 <code>sanitizeGoal</code>（开始目标时执行一次）</h4>
+<ol class="steps orange">
+  <li>距离 &gt; <code>max_goal_distance</code>（9 m）→ 沿直线截断到 9 m，<code>partial=true</code>（全局地图半宽只有 10 m）。</li>
+  <li>目标在全局地图外 → <code>goal_out_of_range</code>。</li>
+  <li>目标格代价 ≤ <code>goal_max_cost</code>（128）或未知 → 合法。</li>
+  <li>否则沿"目标 → 机器人"方向逐格回退，找到第一个可接受的格子 → <code>adjusted=true</code>。</li>
+  <li>仍找不到 → 在 <code>goal_search_radius</code>（0.5 m）内按圆环由近到远搜索。</li>
+  <li>都失败 → <code>goal_in_obstacle</code>。</li>
+</ol>
+
+<h4>路径规划 <code>makePlan</code>（流程与 Nav2 <code>NavfnPlanner</code> 一致）</h4>
+<ol class="steps">
+  <li>复制全局代价栅格，把机器人所在格设为 FREE（机器人所在处不可能是障碍）；<code>allow_unknown: true</code> 时未知格可通行。</li>
+  <li>NavFn 以<b>机器人位置为源</b>做 Dijkstra（或 A*）波前扩散，计算整张图的"导航势场"，每格的势 = 从机器人出发的累计代价（格子代价越高，扩散越慢）。</li>
+  <li>检查目标格的势；若不可达，在 <code>tolerance</code>（0.3 m）方框内找最近的可达格。</li>
+  <li>从目标出发<b>沿势场梯度下降</b>回到机器人，得到路径后反转（最多 <code>4 × max(nx, ny)</code> 步）。</li>
+  <li>按 <code>path_spacing</code>（5 cm）重采样，每点朝向取指向下一点的方向；末点朝向在 <code>use_yaw</code> 时取目标朝向。</li>
+</ol>
+<p>导航中每 <code>1/replan_hz</code>（1 s）重规划一次；若 MPPI 当前跟踪的局部路径上任一点在局部地图中代价 ≥ 253（被新出现的障碍挡住），立即重规划。</p>
+
+<h3 id="s-nav-mppi">6.6 MPPI 局部控制（<code>MppiController</code>）</h3>
+<p>直接使用 Nav2 <code>nav2_mppi_controller</code> 的 <code>Optimizer</code>（Eigen 实现）。<code>ros_shim</code> 提供一个进程内的 <code>nav2::LifecycleNode</code>，<code>g1d_nav.yaml</code> 的 <code>mppi:</code> 段被原样加载为 <code>FollowPath.*</code> 参数，参数名与 Nav2 完全一致。</p>
+
+<h4>MPPI（模型预测路径积分）每个周期做的事</h4>
+<ol class="steps purple">
+  <li><b>路径裁剪</b>（复刻 Nav2 controller_server）：在上次最近点之后 <code>search_window</code>（2 m）内找离机器人最近的路径点，从那里截取 <code>prune_distance</code>（1.7 m）且位于局部地图内的路径段作为参考。</li>
+  <li><b>采样</b>：以上一周期的最优控制序列（56 步 × [vx, wz]）为均值，加上高斯噪声（<code>vx_std</code> 0.2、<code>wz_std</code> 0.4），生成 <b>1000 条</b>候选控制序列。</li>
+  <li><b>约束</b>：裁剪到 <code>vx ∈ [−0.10, 0.40]</code>、<code>|wz| ≤ 0.60</code>，并满足加速度限制 <code>ax ∈ [−1.0, 0.5]</code>、<code>|az| ≤ 1.0</code>；本目标的限速通过 <code>setSpeedLimit</code> 生效。</li>
+  <li><b>推演</b>：用差速模型（<code>DiffDrive</code>）积分 56 × 0.05 s = <b>2.8 s</b> 的轨迹：<code>x += v·cosθ·dt, y += v·sinθ·dt, θ += w·dt</code>。</li>
+  <li><b>评价</b>：每条轨迹由 8 个评价项打分求和，得到代价 S<sub>k</sub>。</li>
+  <li><b>加权平均</b>：<code>w<sub>k</sub> = exp(−(S<sub>k</sub> − min S) / temperature)</code>（temperature = 0.3，<code>gamma</code> 0.015 为控制代价项），新的最优序列 = Σ w<sub>k</sub>·u<sub>k</sub> / Σ w<sub>k</sub>。</li>
+  <li><b>执行</b>：输出序列第一步作为本周期速度，序列整体前移一步，作为下一周期的初值（热启动）。全部轨迹都碰撞时抛出 <code>NoValidControl</code>，NavCore 会在 1 s 后进入恢复。</li>
+</ol>
+
+<table>
+  <tr><th>评价项</th><th>权重</th><th>作用</th></tr>
+  <tr><td>ConstraintCritic</td><td>4.0</td><td>惩罚超出速度 / 加速度约束的部分</td></tr>
+  <tr><td>CostCritic</td><td>3.81</td><td>按<b>整车轮廓</b>（<code>consider_footprint: true</code>）查询代价地图，每 2 个轨迹点查一次；碰撞代价 1e6，近碰撞 253 以上重罚</td></tr>
+  <tr><td>GoalCritic</td><td>5.0</td><td>距目标 1.4 m 内时，奖励轨迹终点接近目标</td></tr>
+  <tr><td>GoalAngleCritic</td><td>3.0</td><td>距目标 0.5 m 内时，奖励朝向接近目标朝向</td></tr>
+  <tr><td>PathAlignCritic</td><td>14.0</td><td>轨迹点贴合参考路径（路径被占用比例 &gt; 5% 时停用，允许绕开路径上的新障碍）</td></tr>
+  <tr><td>PathFollowCritic</td><td>5.0</td><td>奖励沿路径向前推进</td></tr>
+  <tr><td>PathAngleCritic</td><td>2.0</td><td>朝向与路径方向偏差大于 1 rad 时惩罚</td></tr>
+  <tr><td>PreferForwardCritic</td><td>5.0</td><td>惩罚倒车</td></tr>
+</table>
+
+<h3 id="s-nav-fsm">6.7 目标状态机（<code>NavCore</code>）</h3>
+
+<figure>
+<svg viewBox="0 0 980 360" xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker></defs>
+  <style>
+    .st{stroke-width:2} .s-idle{fill:#f1f5f9;stroke:#64748b} .s-act{fill:#dbeafe;stroke:#2563eb} .s-rec{fill:#fef3c7;stroke:#d97706}
+    .s-ok{fill:#dcfce7;stroke:#16a34a} .s-fail{fill:#fee2e2;stroke:#dc2626} .s-can{fill:#ede9fe;stroke:#7c3aed}
+    .sn{font-size:14px;font-weight:700;text-anchor:middle} .el{stroke:#475569;stroke-width:1.5;fill:none;marker-end:url(#a2)} .et{font-size:11px;fill:#334155}
+  </style>
+  <rect x="20" y="140" width="120" height="50" rx="25" class="st s-idle"/><text x="80" y="170" class="sn">IDLE</text>
+  <rect x="260" y="30" width="160" height="50" rx="25" class="st s-act"/><text x="340" y="60" class="sn">NAVIGATING</text>
+  <rect x="260" y="140" width="160" height="50" rx="25" class="st s-rec"/><text x="340" y="170" class="sn">RECOVERING</text>
+  <rect x="260" y="260" width="160" height="50" rx="25" class="st s-act"/><text x="340" y="290" class="sn">ROTATING</text>
+  <rect x="790" y="30" width="160" height="50" rx="25" class="st s-ok"/><text x="870" y="60" class="sn">SUCCEEDED</text>
+  <rect x="790" y="145" width="160" height="50" rx="25" class="st s-fail"/><text x="870" y="175" class="sn">FAILED</text>
+  <rect x="790" y="260" width="160" height="50" rx="25" class="st s-can"/><text x="870" y="290" class="sn">CANCELED</text>
+
+  <path d="M140,152 L258,62" class="el"/><text x="36" y="122" class="et">navigate / simple</text>
+  <path d="M140,180 L258,280" class="el"/><text x="168" y="250" class="et">rotate</text>
+  <path d="M310,80 L310,138" class="el"/><text x="302" y="104" text-anchor="end" class="et">无进展 8 s / 无路径</text><text x="302" y="118" text-anchor="end" class="et">MPPI 失败 &gt; 1 s</text>
+  <path d="M370,138 L370,82" class="el" stroke-dasharray="5 3"/><text x="378" y="104" class="et">动作完成</text><text x="378" y="118" class="et">→ 强制重规划</text>
+  <path d="M420,55 L788,55" class="el"/><text x="604" y="48" text-anchor="middle" class="et">到达（含末端对齐朝向）</text>
+  <path d="M420,272 L788,72" class="el"/><text x="436" y="240" class="et">朝向到达</text>
+  <path d="M420,165 L788,170" class="el"/><text x="470" y="158" class="et">恢复用尽（wait → clear → rotate 后）</text>
+  <path d="M420,285 L788,185" class="el"/><text x="600" y="252" class="et">旋转被挡 &gt; 3 s</text>
+  <path d="M420,297 L788,287" class="el"/><text x="604" y="310" text-anchor="middle" class="et">stop / 人工接管</text>
+  <text x="490" y="350" text-anchor="middle" class="et">所有活动状态（蓝 / 黄）每个周期依次检查：急停 → 人工接管 → LIO 丢失 → 身体姿态 → 超时，触发即进入 FAILED / CANCELED；新目标随时抢占当前目标。</text>
+</svg>
+<figcaption>图 6-2 NavCore 状态机。结束状态之后 1 s 内仍发布零速，之后停止发布 cmd_vel。</figcaption>
+</figure>
+
+<h4>开始一个目标（<code>startGoal</code>）</h4>
+<ol class="steps">
+  <li>前置检查：定位无效 → <code>lio_lost</code>；急停中 → <code>guard_estop</code>；不在导航姿态 → <code>body_not_locked</code>。</li>
+  <li>确定参考位姿：<code>frame="base_at_stamp"</code> 时用 <code>poseAt(stamp)</code> 查历史位姿；查不到且 stamp 超过 5 s 或在未来 1 s 以后 → <code>goal_stamp_unavailable</code>；否则用当前位姿。</li>
+  <li><b>rotate</b> 模式：目标朝向 = 参考朝向 + yaw（或 odom 绝对朝向），进入 ROTATING。</li>
+  <li>其余模式：目标 = 参考位姿 ⊕ (x, y, yaw)；未指定 yaw 时，朝向取"机器人 → 目标"方向（不做末端对齐）。</li>
+  <li>更新全局地图 → <code>sanitizeGoal</code> → <code>navigate</code> 模式规划路径并交给 MPPI，设置限速 → 进入 NAVIGATING。</li>
+</ol>
+
+<h4>NAVIGATING 每个周期（<code>stepNavigate</code>）</h4>
+<ol class="steps">
+  <li><b>末端对齐</b>：位置进入 <code>xy_tolerance</code>（0.2 m）后，若需要对齐且朝向误差 &gt; 0.25 rad，进入原地旋转（P 控制 <code>w = clamp(1.5·err, ±0.5)</code>，最小 0.15 rad/s）；旋转前检查轮廓在 0.3 rad 范围内是否会碰撞，被挡超过 3 s 就以 <code>SUCCEEDED + yaw_not_reached</code> 结束。</li>
+  <li><b>进度检查</b>：8 s 内到目标的距离没有减少"所需进度"就进入恢复。所需进度 = <code>clamp(0.5·(dist − tol), 0.02, 0.2)</code>，即越接近目标要求越小（距目标 0.25 m 时不可能再前进 0.2 m）。</li>
+  <li><b>simple 模式</b>：转向目标（误差 &gt; 0.15 rad 时原地转），再直行 <code>v = min(0.3, 0.6·d + 0.05)</code>，前方 1.5 m 内按 0.1 m 步长做轮廓碰撞检查，被挡直接 <code>blocked</code> 失败。这是保留的"旧方式"闭环版本，用于对照。</li>
+  <li><b>末段直线接近</b>：距目标 &lt; <code>approach_distance</code>（0.6 m），且机器人到目标的直线段整车无碰撞时，绕过 MPPI，用简单 P 控制直线接近：<code>v = min(0.2, 0.8·d + 0.03)</code>。这样可以避免 MPPI 在目标附近徘徊、停滞。</li>
+  <li><b>重规划</b>：到期（1 s）或局部路径被堵时，更新全局地图并重规划；失败则进入恢复（<code>no_path</code>）。</li>
+  <li><b>MPPI</b>：计算速度；连续失败超过 <code>mppi_fail_tolerance_s</code>（1 s）进入恢复（<code>blocked</code>）。</li>
+</ol>
+
+<h4>恢复行为（RECOVERING）</h4>
+<p>按 <code>manager.recovery</code> 顺序执行，每个目标每种动作只用一次，全部用完则 <code>FAILED</code>（原因 <code>blocked</code> 或 <code>no_path</code>）：</p>
+<table>
+  <tr><th>动作</th><th>做什么</th><th>目的</th></tr>
+  <tr><td><code>wait</code></td><td>停车等待 2 s</td><td>等动态障碍（行人）离开，期间射线会把离开的人清除</td></tr>
+  <tr><td><code>clear</code></td><td>清除局部和全局地图中距机器人 1.5 m 以外的障碍</td><td>清掉过时或幽灵障碍（<code>decay_s=0</code> 时障碍不会自己消失）</td></tr>
+  <tr><td><code>rotate</code></td><td>向可通行扇区更多的一侧原地转 0.52 rad（30°），最长 5 s，转动不安全时提前结束</td><td>刷新视野，让雷达看清侧方</td></tr>
+</table>
+<p>每个动作完成后回到 NAVIGATING，重置进度计时，强制立即重规划并重置 MPPI。</p>
+
+<h4>可通行扇区（<code>free_sectors</code>）</h4>
+<p>在 −90°、−60°、…、+90° 共 7 个方向上，从 0.3 m 到 1.5 m 每 0.15 m 放一次整车轮廓（朝向为该方向），只要有一处轮廓代价达到 LETHAL，该方向就不可通行。结果随状态发布，供恢复动作选择旋转方向，也供 NavGPT 在失败后重新决策（"可通行方向 = −30,0,30"）。</p>
+
+<h3 id="s-nav-out">6.8 输出与障碍点</h3>
+<p><code>onLio()</code> 中除了更新地图，还为 guard 生成 <code>rt/nav/obstacle_points</code>：把本帧 <code>odom</code> 系点云变换到当前 <code>base_link</code>，保留满足下列条件的点，并按 5 cm 体素去重：</p>
+<ul>
+  <li>高度在体素层高度带 <code>[0.08, 1.85)</code> 内（因为 <code>odom</code> 的 z=0 就是地面，直接用 odom 的 z 判断）；</li>
+  <li>水平距离 ≤ <code>guard.obstacle_points_range</code>（3 m）；</li>
+  <li>不在车身轮廓内。</li>
+</ul>
+<p>这样 guard 不需要知道任何坐标变换和运动学，直接拿到"车体坐标系下、与车身同高度范围内的三维障碍点"（投影到 xy 使用），桌沿这类悬空障碍也包含在内。</p>
+
+<!-- ================================================================== 7 -->
+<h2 id="s-guard">7. g1d_base_guard：安全守护</h2>
+<p>源码：<code>python/g1d_nav_py/guard_core.py</code>（纯逻辑、可单测，不依赖 DDS）和 <code>guard_node.py</code>（DDS / HTTP 适配）。逻辑与通信分离，所以 14 项 guard 单元测试可以注入时钟，精确验证每条规则。</p>
+
+<h3 id="s-guard-pipe">7.1 30 Hz 处理流水线（<code>GuardCore.step</code>）</h3>
+<ol class="steps orange">
+  <li><b>选择指令源</b>（优先级从高到低）：
+    <ul>
+      <li>急停锁存中，或遥控器接管期内 → 目标 (0, 0)；</li>
+      <li>Web 遥控 <code>rt/nav/teleop_cmd</code> 在 0.3 s 内 → 用遥控指令，先限制在 <code>teleop_vx_max</code> 0.30 / <code>teleop_wz_max</code> 0.50（deadman：浏览器停发 0.3 s 即停）；</li>
+      <li>导航 <code>rt/nav/cmd_vel</code> 在 <code>cmd_timeout</code>（0.3 s）内 → 用导航指令；</li>
+      <li>否则 → (0, 0)（看门狗）。</li>
+    </ul></li>
+  <li><b>限幅</b>：<code>vx ∈ [−0.10, 0.50]</code>，<code>|wz| ≤ 0.60</code>。</li>
+  <li><b>传感器新鲜度</b>：底盘雷达超过 0.5 s 未更新 → <code>scan_stale</code>；<code>require_cloud: true</code> 时 Mid-360S 障碍点超过 0.5 s 未更新 → <code>cloud_stale</code>。两种情况都只允许停车。障碍点集合 = 底盘雷达点 ∪ Mid-360S 障碍点，去掉车身框 <code>|x|&lt;0.30, |y|&lt;0.28</code> 内的点。</li>
+  <li><b>前进反射</b>（vx &gt; 0）：沿指令圆弧扫掠，求净距 d（7.2 节）。<code>d &lt; stop_m</code>（0.45 m）→ 停车，并且禁止原地转（<code>front</code>）；<code>d &lt; slow_m</code>（1.2 m）→ 线性减速：
+    <div class="formula">v = max( v · (d − 0.45) / (1.20 − 0.45),  min(v, creep_v = 0.05) )</div>
+    爬行速度下限保证车能真正开到停车线，而不是无限趋近。</li>
+  <li><b>后退反射</b>（vx &lt; 0）：同样扫掠，后方 <code>rear_clear_m</code>（0.5 m）内有障碍 → 禁止后退（<code>rear</code>）。</li>
+  <li><b>旋转保护</b>：|v| &lt; 0.05 且 w ≠ 0 时，若半径 <code>rotate_radius</code>（0.38 m）圆内、车身框外有障碍点 → 禁止旋转（<code>rotate</code>）。</li>
+  <li><b>加速度限制</b>：加速 <code>acc_v</code> 0.5 m/s²，减速或换向 <code>brake_v</code> 1.5 m/s²，角加速度 <code>acc_w</code> 1.0 rad/s²。急停或遥控接管时<b>不做斜坡</b>，直接置零。</li>
+  <li><b>是否发布</b>（7.3 节）。</li>
+</ol>
+
+<h4>其他输入</h4>
+<ul>
+  <li><b>急停</b>：<code>rt/nav/estop "on"</code> 锁存，<code>"off"</code> 人工解除。底盘 HTTP 事件 <code>BUMPER_TRIGGERED</code> / <code>CLIFF_DETECTED</code> 也会锁存急停（后台线程每 0.5 s 轮询，<code>EventTracker</code> 只认启动后新出现的事件）。</li>
+  <li><b>遥控器接管</b>：<code>rt/wirelesscontroller</code> 任一摇杆偏移 &gt; 0.15 → 此后 5 s 内 guard 完全不发布，让遥控器直接控制底盘。guard_state 中 <code>manual=true</code>，g1d_nav 因此以 <code>manual_override</code> 取消目标。</li>
+  <li><b>底盘雷达转发</b>：<code>LaserScan_</code> → <code>scan_to_points</code>（按安装位置 <code>robot.chassis_laser</code> 变换到 <code>base_link</code>）→ 既用于反射层，又以 <code>PointCloud2_</code> 发布到 <code>rt/nav/chassis_scan</code>。</li>
+  <li><b>参数热更新</b>：<code>rt/nav/param_set</code>（<code>target: "guard"</code>）只接受白名单参数，并检查范围（如 <code>stop_m ∈ [0.1, 2.0]</code>，且必须满足 <code>slow_m &gt; stop_m</code>），结果通过 <code>rt/nav/param_state</code> 回执。</li>
+  <li><b>状态输出</b>：10 Hz <code>rt/nav/guard_state</code>（拦截原因、急停、人工接管来源 remote / web、指令源、前后净距、各输入的年龄与计数），同时写入 <code>logs/guard-*.jsonl</code>。</li>
+</ul>
+
+<h3 id="s-guard-sweep">7.2 扫掠路径反射层（<code>swept_clearance</code>）</h3>
+<p>固定扇区或直走廊的检查有两个问题：转向避让时会误停，向障碍转弯时停得太晚。guard 改为把<b>整车矩形</b>（前沿 0.28 m、后沿 0.30 m、半宽 0.30 m）沿当前指令 <code>(v, w)</code> 决定的圆弧向前"扫"，求第一次碰到障碍点时走过的弧长。</p>
+
+<div class="grid2">
+<figure style="margin:0">
+<svg viewBox="0 100 420 230" xmlns="http://www.w3.org/2000/svg">
+  <style>.rc{fill:none;stroke:#2563eb;stroke-width:1.5} .rc0{fill:#dbeafe;stroke:#1d4ed8;stroke-width:2} .lb2{font-size:11px;fill:#334155}</style>
+  <path d="M100,260 Q160,252 207.6,214.7 T 260,140" fill="none" stroke="#94a3b8" stroke-dasharray="5 4"/>
+  <g transform="translate(100,260)"><rect x="-30" y="-30" width="58" height="60" class="rc0"/></g>
+  <g transform="translate(139.5,254.7) rotate(-15.3)"><rect x="-30" y="-30" width="58" height="60" class="rc" opacity="0.8"/></g>
+  <g transform="translate(176.2,239.2) rotate(-30.5)"><rect x="-30" y="-30" width="58" height="60" class="rc" opacity="0.6"/></g>
+  <g transform="translate(207.6,214.7) rotate(-45.8)"><rect x="-30" y="-30" width="58" height="60" class="rc" opacity="0.45"/></g>
+  <line x1="128" y1="260" x2="340" y2="260" stroke="#f59e0b" stroke-dasharray="3 3"/>
+  <circle cx="270" cy="262" r="5" fill="#dc2626"/>
+  <text x="236" y="284" class="lb2">直行会撞到，但沿圆弧不会</text>
+  <text x="236" y="299" class="lb2">→ 不误停</text>
+  <circle cx="255" cy="168" r="5" fill="#dc2626"/>
+  <text x="262" y="165" class="lb2">圆弧上的障碍</text>
+  <text x="262" y="180" class="lb2">→ 提前减速 / 停车</text>
+  <text x="76" y="318" class="lb2">当前车体</text>
+  <text x="10" y="120" class="lb2">俯视图：x 向右为前，y 向上为左；k = w / |v|（曲率）</text>
+</svg>
+<figcaption>图 7-1 整车矩形沿指令圆弧扫掠</figcaption>
+</figure>
+<div>
+<p><b>算法（向量化 numpy）：</b></p>
+<div class="formula">k = w / |v|
+|k| &lt; 1e-3（直行）：
+    命中 = |y| ≤ 半宽 且 x·sgn(v) &gt; 前沿
+    d = min(x·sgn(v) − 前沿)
+否则（圆弧）：
+    步长 ds = min(0.05 m, 0.05 rad / |k|)
+    s_max = min(查找距离, (π/2) / |k|)    ← 最多看四分之一圈
+    对每个 s：θ = k·s
+        车体中心 = (sgn·sin θ / k, sgn·(1 − cos θ) / k)
+        把所有障碍点变换到该处车体坐标系
+        命中 = −后沿 ≤ lx ≤ 前沿 且 |ly| ≤ 半宽
+    d = 第一次命中前一步的 s</div>
+<p>前进时查找距离为 <code>slow_m</code>（1.2 m），后退为 <code>rear_clear_m + 0.5</code>。</p>
+</div>
+</div>
+
+<h3 id="s-guard-pub">7.3 发布策略与单一写入者</h3>
+<ul>
+  <li><b>启动时静默</b>：<code>t_zero</code> 初值为 −∞，没有运动就不发布，不会抢遥控器或其他控制源。</li>
+  <li><b>运动中</b>以 30 Hz 持续发布；速度归零后再持续发布 <code>zero_hold</code>（1 s，需用 <code>cmd_vel_probe.py</code> 实测底盘行为后确定），然后停止发布，让底盘"松开"（有的底盘收到零速会锁轮，影响推车）。</li>
+  <li><b>遥控器接管期间不发布</b>。</li>
+  <li><b>单一写入者</b>：启动时用 DDS 发现检查 <code>rt/cmd_vel_no_limit</code> 的其他写入者；g1d_nav、g1d_web、NavGPT 都不直接写底盘，Web 遥控也经 guard 转发，同样受反射层约束。</li>
+  <li>退出时若仍在运动，连发 3 次零速。</li>
+</ul>
+
+<!-- ================================================================== 8 -->
+<h2 id="s-navgpt">8. NavGPT 接入与延迟补偿</h2>
+<p>NavGPT 看一张图片，推理出一个相对航点 <code>(dx, dy, dyaw)</code>（<code>base_link</code>：x 前、y 左、逆时针为正）。问题是：推理需要时间，等结果出来时机器人可能已经移动或转动了。如果直接把航点加到"当前位姿"上，目标就错了。</p>
+
+<ol class="steps green">
+  <li>相机帧在主机时间 <code>t_recv</code> 收到，<code>t_img = t_recv − camera_latency_s</code>（例如 0.08 s）。</li>
+  <li>NavGPT 推理若干秒，返回 <code>(dx, dy, dyaw)</code>。</li>
+  <li><code>NavGptBridge.send()</code> 通过 <code>NavClient</code> 发布目标：<code>frame="base_at_stamp"</code>、<code>stamp=t_img</code>、限速 0.35 m/s、容差 0.2 m / 0.25 rad、超时 60 s。</li>
+  <li>g1d_nav 用 <code>poseAt(t_img)</code> 从 10 s 位姿历史中取出<b>拍照那一刻</b>的底盘位姿 P<sub>img</sub>，目标 = P<sub>img</sub> ⊕ (dx, dy, dyaw)，再转换为 <code>odom</code> 绝对坐标，此后与机器人怎么动无关。</li>
+  <li><code>NavClient.wait()</code> 订阅 <code>rt/nav/status</code>，按 <code>goal_id</code> 等待结束状态。</li>
+  <li><code>NavGptBridge.feedback()</code> 生成下一轮提示词：成功返回空字符串（或 <code>[导航完成] yaw_not_reached</code>）；失败返回 <code>[导航失败] 原因=blocked（已部分前进） 可通行方向(度,左正)=-30,0,30</code>。</li>
+</ol>
+<pre><code><span class="k">from</span> g1d_nav_py.nav_client <span class="k">import</span> NavClient
+<span class="k">from</span> g1d_nav_py.navgpt_bridge <span class="k">import</span> NavGptBridge
+
+bridge = NavGptBridge(NavClient(<span class="n">0</span>, <span class="s">"eth0"</span>), camera_latency_s=<span class="n">0.08</span>, max_speed=<span class="n">0.35</span>)
+result = bridge.step(<span class="k">lambda</span>: navgpt3.infer(image, instruction), t_recv=frame_recv_time)
+prompt += bridge.feedback(result)   <span class="c"># 失败时附带原因和可通行方向</span></code></pre>
+<div class="note"><b>精度前提：</b>延迟补偿依赖主机时间一致。所有跨进程时间戳都使用 <code>CLOCK_REALTIME</code>（<code>nowSec()</code> / <code>time.time()</code>），NavGPT 若运行在另一台机器上，需要与 PC2 做 NTP / PTP 同步。</div>
+
+<!-- ================================================================== 9 -->
+<h2 id="s-web">9. g1d_web：Web 调试台</h2>
+<p>运行在 PC2 上，后端只依赖 Python 标准库 + numpy + PyYAML + unitree_sdk2py（HTTP 和 WebSocket 协议都是自己实现的，见 <code>server.py</code>、<code>wsproto.py</code>）；前端是原生 ES 模块 + 随仓库提供的 three.js r160，离线可用。</p>
+
+<h3>9.1 后端结构</h3>
+<div class="grid3">
+  <div class="card"><b>Hub（<code>hub.py</code>）</b><br>DDS 读取线程。订阅 15 个话题，只保存每个话题的最新值、接收时间、频率计（3 s 窗口）和版本号；提供 goal / estop / teleop / param_set 发布者。不接触 asyncio。</div>
+  <div class="card"><b>WebApp（<code>app.py</code>）</b><br>单个 asyncio 循环，20 Hz 轮询 Hub 的版本号，有变化才打包推送。负责控制锁、命令分发、任务运行器、验收测试、地图构建与导出。</div>
+  <div class="card"><b>前端（<code>static/</code>）</b><br><code>scene.js</code>：3D / 俯视视图和 13 个图层；<code>main.js</code>：7 个标签页（导航、任务、遥控、建图、测试、参数、诊断）；<code>net.js</code>：WebSocket 通信。</div>
+</div>
+
+<h3>9.2 推送协议</h3>
+<ul>
+  <li><b>文本帧（JSON）</b>：<code>hello</code>（配置、轮廓、测试目录）、<code>state</code>（10 Hz：status / guard / lio / debug / 位姿 / 指令 / 任务 / 测试 / 地图统计 / 控制权，每 1 s 附带话题频率表）、<code>params</code>、<code>event</code> 等。</li>
+  <li><b>二进制帧</b>：<code>struct "&lt;B3xI"</code>（1 字节类型 + 3 字节填充 + 4 字节头长度）+ JSON 头（填充到 4 字节对齐）+ float32 xyz 数组。类型：1 当前帧、2 地图增量、3 地图重置、4 障碍点、5 底盘雷达、6 局部代价地图、7 全局代价地图。</li>
+  <li><b>两种队列</b>：当前帧、障碍点、代价地图等用"槽位"，只保留最新一份，网络慢就丢旧数据；地图增量用有序"流"，积压超过 400 包则清空队列，下次重发完整地图（每包 20 万点）。WebSocket 缓冲超过 2 MB 时暂缓发送。</li>
+</ul>
+
+<h3>9.3 主要功能的实现</h3>
+<table>
+  <tr><th>功能</th><th>实现</th></tr>
+  <tr><td>控制锁</td><td>同一时刻只有一个客户端是 <code>owner</code>，其他页面只读，可以强制接管；owner 断开自动释放。<b>急停任何页面都能按</b>，解除急停、下发目标、遥控、任务、参数、测试需要控制权。</td></tr>
+  <tr><td>累积建图</td><td><code>registered_cloud</code>（odom_lio）用 <code>debug</code> 中的 <code>T_odom_lio</code> 变换到 odom；<code>MapBuilder</code> 把坐标按体素（5 cm）编码为 64 位键（每轴 21 位），用集合去重，只返回新占据体素的点，上限 300 万点。没有 <code>T_odom_lio</code> 时暂停累积。</td></tr>
+  <tr><td>地图导出</td><td><code>maps/&lt;时间&gt;/</code>：<code>map.pcd</code>（二进制 float32）、<code>grid.png + grid.yaml</code>（map_server 格式；|z| &lt; 0.08 的地面点与轨迹为空闲，并膨胀 1 格填补稀疏空洞，0.10–1.80 m 高度带内的点为占据）、<code>trajectory.csv</code>、<code>costmap.png + yaml</code>、<code>meta.json</code>。PNG 编码器用 zlib 自写，无需 PIL。</td></tr>
+  <tr><td>点选导航</td><td>前端按下定位置、拖动定朝向，发送 <code>goal</code>；后端 <code>clean_goal()</code> 白名单过滤字段，默认 <code>frame: odom</code>，转发到 <code>rt/nav/goal</code>。</td></tr>
+  <tr><td>多航点任务</td><td><code>MissionRunner</code>：依次发送 odom 航点，按 <code>goal_id</code> 匹配状态；成功后可停留 <code>wait_s</code>；失败策略为 stop / skip / retry；<code>manual_override</code> 暂停任务；<code>guard_estop / lio_lost / body_*</code> 直接失败；发出 3 s 内没有收到状态则判定 nav 未运行；支持循环次数（0 = 无限）。保存为 <code>missions/*.json</code>。</td></tr>
+  <tr><td>Web 遥控</td><td>前端按住摇杆或 W/A/S/D 时持续发送，后端转发到 <code>rt/nav/teleop_cmd</code>；guard 在 0.3 s 内收不到即停（deadman），遥控优先于导航（nav 因 <code>manual</code> 取消目标）。</td></tr>
+  <tr><td>验收测试</td><td>T1 自动以设定速度驶向障碍，记录 guard 拦停后的净距；T2 行驶 2 s 后停发指令，测停车时间；T3 矩形闭环误差；T4 12 × 90° 原地旋转的平移漂移；T5 走廊绕障到达率（≥ 9/10）；T6 悬空桌沿 10/10 无碰撞。结果写入 <code>logs/tests/*.json</code>。</td></tr>
+  <tr><td>参数</td><td>"应用"经 <code>rt/nav/param_set</code> 立即生效（guard 白名单 + nav 的 <code>max_speed</code>、末段接近速度、旋转增益、进度窗口、恢复参数）；"保存"写回 <code>config/g1d_nav.yaml</code>，保留注释，并自动备份 <code>.bak-&lt;时间&gt;</code>。</td></tr>
+</table>
+
+<!-- ================================================================== 10 -->
+<h2 id="s-safety">10. 多层安全设计与故障场景</h2>
+<table>
+  <tr><th>层</th><th>机制</th><th>触发</th><th>失效时由谁兜底</th></tr>
+  <tr><td>L1 规划</td><td>代价地图 + MPPI（整车轮廓、膨胀 0.55 m）+ 旋转 / 直线段轮廓检查</td><td>正常避障</td><td>L2</td></tr>
+  <tr><td>L2 guard 反射层</td><td>扫掠路径、后退、旋转圆；底盘雷达 + Mid-360S 三维障碍点</td><td>0.45 m 停车 / 1.2 m 减速</td><td>L3–L5</td></tr>
+  <tr><td>L3 guard 看门狗</td><td>指令超时 0.3 s、传感器超时 0.5 s</td><td>上游失联、传感器断流</td><td>停车</td></tr>
+  <tr><td>L4 急停</td><td>话题、Web 急停按钮（空格键）、底盘碰撞 / 悬崖事件</td><td>锁存，必须人工解除</td><td>—</td></tr>
+  <tr><td>L5 底盘自身</td><td>指令超时、AEB</td><td>guard 失联</td><td>—</td></tr>
+  <tr><td>流程</td><td>姿态锁定、LIO 健康、单一写入者、人工接管优先</td><td>—</td><td>—</td></tr>
+</table>
+
+<h3>故障场景推演</h3>
+<table>
+  <tr><th>故障</th><th>系统反应</th></tr>
+  <tr><td>g1d_nav 崩溃或卡死</td><td>guard 0.3 s 收不到 <code>cmd_vel</code> → 目标速度 0 → 以 1.5 m/s² 减速停车 → 零速保持 1 s 后静默。障碍点也随之停止更新，0.5 s 后 <code>cloud_stale</code>，guard 只允许停车。</td></tr>
+  <tr><td>g1d_lio 崩溃 / LIO 不健康</td><td>nav：0.5 s 后 <code>valid=false</code> → <code>FAILED: lio_lost</code>，再发 1 s 零速；guard：Mid-360S 障碍点断流 → <code>cloud_stale</code>，禁止运动。</td></tr>
+  <tr><td>guard 崩溃</td><td>没有任何进程写 <code>rt/cmd_vel_no_limit</code>，底盘按自身指令超时停车（超时时间用 <code>cmd_vel_probe.py</code> 的 silence 测试实测）。</td></tr>
+  <tr><td>底盘雷达断流</td><td>guard <code>scan_stale</code>，只允许停车；nav 的 ScanLayer 不再更新，但体素层继续工作。</td></tr>
+  <tr><td>g1d_web 崩溃 / 浏览器断网</td><td>不影响导航；若正在 Web 遥控，0.3 s deadman 停车；控制权自动释放。</td></tr>
+  <tr><td>有人用遥控器</td><td>guard 立即静默 5 s，nav 以 <code>manual_override</code> 取消目标，任务暂停。</td></tr>
+  <tr><td>导航中手臂 / 腰 / 升降动了</td><td>nav <code>FAILED: body_moved</code>（定位链已不可信）。</td></tr>
+  <tr><td>碰撞 / 悬崖事件</td><td>guard 急停锁存并立即归零，nav <code>FAILED: guard_estop</code>，任务暂停，必须人工发 <code>off</code>。</td></tr>
+  <tr><td>行人突然出现</td><td>体素层标记，MPPI 绕行或减速；若太近，guard 反射层减速或停车；长时间被挡则依次执行 wait / clear / rotate 恢复动作。</td></tr>
+</table>
+
+<!-- ================================================================== 11 -->
+<h2 id="s-noros">11. 免 ROS 移植的实现方式</h2>
+<p>项目的一个核心工程目标：<b>算法与上游开源实现保持一致</b>（便于信任与跟进），同时机器人上<b>不装 ROS、PCL、Boost</b>。做法是"原样 vendor + 垫片 + 少量可追溯补丁"。</p>
+<table>
+  <tr><th>手段</th><th>做法</th></tr>
+  <tr><td><code>src/ros_shim</code></td><td>最小 ROS 2 API 垫片，只实现 vendored Nav2 代码用到的符号：rclcpp 日志宏（输出到 stderr，级别由 <code>G1D_LOG_LEVEL</code> 控制）、参数系统（进程内键值表 <code>nav2::LifecycleNode</code>，由 YAML 填充）、时间、消息结构体（字段名与 ROS 一致，无序列化）、tf2 工具函数、angles、<code>Costmap2DROS</code> 门面。</td></tr>
+  <tr><td>pluginlib 静态注册</td><td><code>PLUGINLIB_EXPORT_CLASS</code> 在静态初始化时把工厂函数登记到注册表；MPPI 的运动模型、评价项、轨迹校验器因此可以按名字创建。相关目标文件必须整体链接（CMake <code>WHOLE_ARCHIVE</code>，并为 CMake 3.16 提供兼容分支）。</td></tr>
+  <tr><td><code>src/pcl_lite</code></td><td>替代 PCL 的点类型、<code>PointCloud</code> 和 <code>VoxelGrid</code>，满足 FAST-LIO 和输出降采样的需要。</td></tr>
+  <tr><td>IKFoM 去 Boost</td><td>只保留 Boost.Preprocessor 头文件（子模块）。</td></tr>
+  <tr><td><code>fast_lio_api</code></td><td><code>laserMapping.cpp</code> 中的 ROS 订阅 / 发布 / tf / PCD 保存全部去掉，换成 <code>init / push_imu / push_scan / process / reset</code>；IESKF 和 ikd-Tree 算法未改。</td></tr>
+  <tr><td>核心与 DDS 分离</td><td><code>g1d_common / g1d_lio / g1d_nav</code> 库不依赖 SDK，在 Windows（MinGW）上也能完整编译和测试；只有 <code>src/apps</code> 链接 unitree_sdk2（Linux 专用）。开发机上对 SDK 头文件做 <code>-fsyntax-only</code> 检查，曾借此发现并修复 <code>g1d::dds</code> 与 CycloneDDS <code>::dds</code> 的命名冲突。</td></tr>
+  <tr><td>LaserScan 转发</td><td>见 2.2 节，C++ 侧因此只使用 SDK 自带的消息类型。</td></tr>
+  <tr><td>依赖管理</td><td>未修改的依赖用 git 子模块（Eigen 3.4.0、yaml-cpp 0.8.0、Livox-SDK2、unitree_sdk2、unitree_sdk2_python、boost_preprocessor）；修改过的上游代码 vendor 进仓库（先原样提交、再修改），说明见 <code>third_party/*/UPSTREAM.md</code>；单文件库 nlohmann/json、doctest、three.js 随仓库提供。</td></tr>
+</table>
+
+<!-- ================================================================== 12 -->
+<h2 id="s-iface">12. 接口参考</h2>
+
+<h3>12.1 DDS 话题</h3>
+<table>
+  <tr><th>话题</th><th>类型</th><th>发布者 → 订阅者</th><th>频率</th><th>说明</th></tr>
+  <tr><td><code>rt/slamware_ros_sdk_server_node/odom</code></td><td>Odometry_</td><td>底盘 → nav, web</td><td>~20 Hz</td><td>轮速里程计（时间戳慢约 181 s，按接收时间处理）</td></tr>
+  <tr><td><code>rt/slamware_ros_sdk_server_node/scan</code></td><td>LaserScan_</td><td>底盘 → guard</td><td>10 Hz</td><td>底盘单线雷达 360 束</td></tr>
+  <tr><td><code>rt/hispeed_state</code></td><td>Point32_</td><td>本体 → nav</td><td>—</td><td>y：升降高度，z：升降速度</td></tr>
+  <tr><td><code>rt/lowstate</code> / <code>rt/waistpitchstate</code></td><td>LowState_ / MotorState_</td><td>本体 → nav</td><td>—</td><td>12 号腰偏航、15–28 号手臂 / 腰俯仰</td></tr>
+  <tr><td><code>rt/wirelesscontroller</code></td><td>WirelessController_</td><td>本体 → guard</td><td>—</td><td>人工接管检测</td></tr>
+  <tr><td><code>rt/nav/lio_odom</code></td><td>Odometry_</td><td>lio → nav</td><td>10 Hz</td><td>IMU 在 <code>odom_lio</code> 的位姿</td></tr>
+  <tr><td><code>rt/nav/registered_cloud</code></td><td>PointCloud2_</td><td>lio → nav, web</td><td>10 Hz</td><td>配准点云（<code>odom_lio</code>，5 cm）</td></tr>
+  <tr><td><code>rt/nav/lio_health</code></td><td>String_ JSON</td><td>lio → nav, web</td><td>10 Hz</td><td>ok、degenerate、errors、点数、残差、耗时、时钟偏移</td></tr>
+  <tr><td><code>rt/nav/livox_cloud</code></td><td>PointCloud2_</td><td>lio → calib_floor</td><td>≤5 Hz</td><td>雷达系原始点云，标定用（默认关闭）</td></tr>
+  <tr><td><code>rt/nav/chassis_scan</code></td><td>PointCloud2_</td><td>guard → nav, web</td><td>10 Hz</td><td>底盘雷达点（<code>base_link</code>）</td></tr>
+  <tr><td><code>rt/nav/goal</code></td><td>String_ JSON</td><td>客户端 → nav</td><td>事件</td><td>导航目标</td></tr>
+  <tr><td><code>rt/nav/status</code></td><td>String_ JSON</td><td>nav → 客户端, web</td><td>10 Hz</td><td>导航状态</td></tr>
+  <tr><td><code>rt/nav/cmd_vel</code></td><td>Twist_</td><td>nav → guard</td><td>20 Hz</td><td>导航速度</td></tr>
+  <tr><td><code>rt/nav/base_odom</code></td><td>Odometry_</td><td>nav → web</td><td>20 Hz</td><td>融合后的 <code>base_link</code> 位姿</td></tr>
+  <tr><td><code>rt/nav/obstacle_points</code></td><td>PointCloud2_</td><td>nav → guard, web</td><td>10 Hz</td><td>反射层障碍点（<code>base_link</code>）</td></tr>
+  <tr><td><code>rt/nav/local_costmap</code> / <code>global_costmap</code></td><td>OccupancyGrid_</td><td>nav → web</td><td>2 / 1 Hz</td><td>调试显示</td></tr>
+  <tr><td><code>rt/nav/debug</code></td><td>String_ JSON</td><td>nav → web</td><td>5 Hz</td><td><code>T_odom_lio</code>、目标、全局 / 局部路径、MPPI 最优轨迹、限速</td></tr>
+  <tr><td><code>rt/nav/guard_state</code></td><td>String_ JSON</td><td>guard → nav, web</td><td>10 Hz</td><td>拦截原因、急停、人工接管、净距</td></tr>
+  <tr><td><code>rt/nav/estop</code></td><td>String_</td><td>任意 → guard, nav</td><td>事件</td><td><code>"on"</code> 锁存 / <code>"off"</code> 解除</td></tr>
+  <tr><td><code>rt/nav/teleop_cmd</code></td><td>Twist_</td><td>web → guard</td><td>~10 Hz</td><td>Web 遥控（deadman）</td></tr>
+  <tr><td><code>rt/nav/param_set</code> / <code>param_state</code></td><td>String_ JSON</td><td>web ↔ guard, nav</td><td>事件 / 1 Hz</td><td>参数热更新与回执</td></tr>
+  <tr><td><code>rt/cmd_vel_no_limit</code></td><td>Twist_</td><td><b>仅 guard</b> → 底盘</td><td>30 Hz</td><td>底盘速度指令</td></tr>
+</table>
+
+<h3>12.2 目标 JSON（<code>rt/nav/goal</code>）</h3>
+<pre><code>{<span class="s">"id"</span>: <span class="s">"navgpt-0042"</span>, <span class="s">"mode"</span>: <span class="s">"navigate"</span>, <span class="s">"frame"</span>: <span class="s">"base_at_stamp"</span>, <span class="s">"stamp"</span>: <span class="n">1794554321.234</span>,
+ <span class="s">"x"</span>: <span class="n">1.80</span>, <span class="s">"y"</span>: <span class="n">-0.40</span>, <span class="s">"yaw"</span>: <span class="n">0.52</span>, <span class="s">"use_yaw"</span>: <span class="k">true</span>,
+ <span class="s">"xy_tolerance"</span>: <span class="n">0.20</span>, <span class="s">"yaw_tolerance"</span>: <span class="n">0.25</span>, <span class="s">"max_speed"</span>: <span class="n">0.35</span>, <span class="s">"timeout_s"</span>: <span class="n">60</span>}</code></pre>
+<table>
+  <tr><th>字段</th><th>默认</th><th>说明</th></tr>
+  <tr><td><code>mode</code></td><td><code>navigate</code></td><td><code>navigate</code>（规划 + MPPI）/ <code>simple</code>（转向后直行）/ <code>rotate</code>（原地转）/ <code>stop</code>（取消）</td></tr>
+  <tr><td><code>frame</code></td><td><code>base_at_stamp</code></td><td>相对 <code>stamp</code> 时刻的车体（省略 stamp 即当前）；或 <code>odom</code> 绝对坐标</td></tr>
+  <tr><td><code>stamp</code></td><td>0</td><td>主机时间（秒），超过 5 s 的旧时刻被拒绝</td></tr>
+  <tr><td><code>yaw</code> / <code>use_yaw</code></td><td>省略 = 不对齐</td><td>给出 yaw 时 <code>use_yaw</code> 默认 true</td></tr>
+  <tr><td><code>xy_tolerance</code> / <code>yaw_tolerance</code></td><td>0.2 m / 0.25 rad</td><td>到达判定</td></tr>
+  <tr><td><code>max_speed</code></td><td>0（默认）</td><td>本目标限速，不超过 <code>mppi.vx_max</code></td></tr>
+  <tr><td><code>timeout_s</code></td><td>120</td><td>超时失败</td></tr>
+</table>
+
+<h3>12.3 状态 JSON 与结束原因</h3>
+<p>状态主要字段：<code>goal_id, state, reason, partial, adjusted, distance_remaining, yaw_error, goal, pose, velocity, free_sectors, lio_ok, state_valid, state_source, odom_consistent, body_locked, lock_reasons, guard{blocked, estop, manual}, recoveries, path_points, stamp</code>。</p>
+<table>
+  <tr><th>reason</th><th>state</th><th>含义</th></tr>
+  <tr><td><code>""</code></td><td>SUCCEEDED</td><td>到达</td></tr>
+  <tr><td><code>yaw_not_reached</code></td><td>SUCCEEDED</td><td>位置到达，朝向对齐被障碍阻挡超过 3 s</td></tr>
+  <tr><td><code>stop</code> / <code>manual_override</code></td><td>CANCELED</td><td>收到 stop / 遥控器或 Web 遥控接管</td></tr>
+  <tr><td><code>invalid_goal: …</code></td><td>FAILED</td><td>JSON 无效（未知 mode / frame 等）</td></tr>
+  <tr><td><code>goal_stamp_unavailable</code></td><td>FAILED</td><td>stamp 太旧或超出位姿历史</td></tr>
+  <tr><td><code>goal_out_of_range</code> / <code>goal_in_obstacle</code></td><td>FAILED</td><td>目标在地图外 / 在障碍内且附近无可达点</td></tr>
+  <tr><td><code>no_path</code></td><td>FAILED</td><td>没有可行路径（含恢复后）</td></tr>
+  <tr><td><code>blocked</code></td><td>FAILED</td><td>长时间无进展且恢复用尽；或 simple / rotate 被挡</td></tr>
+  <tr><td><code>timeout</code></td><td>FAILED</td><td>超过 <code>timeout_s</code></td></tr>
+  <tr><td><code>lio_lost</code></td><td>FAILED</td><td>LIO 不健康或超时</td></tr>
+  <tr><td><code>body_not_locked</code> / <code>body_moved</code></td><td>FAILED</td><td>开始时不在导航姿态 / 导航中身体关节变化</td></tr>
+  <tr><td><code>guard_estop</code></td><td>FAILED</td><td>急停</td></tr>
+</table>
+
+<!-- ================================================================== 13 -->
+<h2 id="s-params">13. 关键参数速查（<code>config/g1d_nav.yaml</code>）</h2>
+<p>所有进程共用这一个配置文件。标注 TBD 的项必须在真机上标定（见 <code>docs/CALIBRATION.md</code>）。</p>
+<table>
+  <tr><th>段</th><th>参数</th><th>默认</th><th>影响</th></tr>
+  <tr><td rowspan="4"><b>必须标定</b></td><td><code>kinematics.head_to_livox</code></td><td>xyz [0.05,0,0.55] rpy [π,−0.04,0]</td><td>雷达外参，错误会导致原地转时"绕圈"，障碍位置偏移</td></tr>
+  <tr><td><code>kinematics.base_to_agv_z</code>、<code>lift_scale/offset</code></td><td>0 / 1 / 0</td><td>雷达高度，影响高度带判断</td></tr>
+  <tr><td><code>self_filter.boxes</code></td><td>2 个盒子</td><td>偏小会让车身成为障碍，偏大会滤掉近处真实障碍</td></tr>
+  <tr><td><code>kinematics.nav_pose.arm_tuck</code>、<code>guard.zero_hold</code></td><td>空 / 1.0</td><td>姿态锁定基准 / 零速保持时间</td></tr>
+  <tr><td rowspan="3"><b>lio</b></td><td><code>blind</code> / <code>max_range</code></td><td>0.6 / 60 m</td><td>近距离盲区和最大距离</td></tr>
+  <tr><td><code>filter_size_surf</code> / <code>filter_size_map</code></td><td>0.3 / 0.4 m</td><td>精度与算力权衡</td></tr>
+  <tr><td><code>health.*</code></td><td>见 5.5 节</td><td>LIO 丢失判定灵敏度</td></tr>
+  <tr><td rowspan="2"><b>state</b></td><td><code>lio_timeout_s</code> / <code>max_extrapolation_s</code></td><td>0.5 / 0.3 s</td><td>定位丢失判定 / 外推上限</td></tr>
+  <tr><td><code>allow_wheel_only</code></td><td>false</td><td>LIO 丢失后是否允许仅靠轮速继续</td></tr>
+  <tr><td rowspan="3"><b>costmap</b></td><td><code>voxel.z_min/z_max</code></td><td>0.08 / 1.85 m</td><td>障碍高度带（应覆盖机器人全高）</td></tr>
+  <tr><td><code>inflation.radius</code> / <code>cost_scaling_factor</code></td><td>0.55 m / 3.0</td><td>离障碍多远开始"嫌弃"，以及衰减快慢</td></tr>
+  <tr><td><code>voxel.decay_s</code></td><td>0</td><td>0 = 障碍保留到被射线清除</td></tr>
+  <tr><td rowspan="3"><b>mppi</b></td><td><code>vx_max</code> / <code>wz_max</code></td><td>0.40 / 0.60</td><td>导航最高速度</td></tr>
+  <tr><td><code>time_steps</code> × <code>model_dt</code>，<code>batch_size</code></td><td>56 × 0.05，1000</td><td>预测时域 2.8 s，算力</td></tr>
+  <tr><td><code>CostCritic.cost_weight</code>、<code>PathAlignCritic.cost_weight</code></td><td>3.81 / 14.0</td><td>避障与贴路径的平衡</td></tr>
+  <tr><td rowspan="2"><b>manager</b></td><td><code>progress_window_s</code> / <code>progress_min_m</code></td><td>8 s / 0.2 m</td><td>多久没进展算被堵</td></tr>
+  <tr><td><code>recovery</code></td><td>[wait, clear, rotate]</td><td>恢复动作顺序</td></tr>
+  <tr><td rowspan="3"><b>guard</b></td><td><code>stop_m</code> / <code>slow_m</code> / <code>creep_v</code></td><td>0.45 / 1.20 m / 0.05</td><td>反射层停车 / 减速距离与爬行速度</td></tr>
+  <tr><td><code>cmd_timeout</code> / <code>sensor_timeout</code></td><td>0.3 / 0.5 s</td><td>看门狗</td></tr>
+  <tr><td><code>require_cloud</code></td><td>true</td><td>false 时仅靠底盘雷达（上线 P1 阶段）</td></tr>
+</table>
+
+<!-- ================================================================== 14 -->
+<h2 id="s-build">14. 构建、仿真与测试</h2>
+
+<h3>14.1 构建</h3>
+<table>
+  <tr><th>场景</th><th>命令</th><th>产物</th></tr>
+  <tr><td>Windows 开发机</td><td><code>scripts\build_host.ps1 -Demo</code></td><td>算法库 + 测试 + 离线导航演示图（<code>logs/sim_*.png</code>）</td></tr>
+  <tr><td>打包</td><td><code>scripts\pack_for_robot.ps1</code></td><td>基于 <code>git archive</code>，统一 LF 换行、保留 SDK 符号链接 → <code>dist/g1d_ws-&lt;commit&gt;.tar.gz</code></td></tr>
+  <tr><td>机器人</td><td><code>scripts/build_robot.sh</code></td><td>修复 <code>libddsc.so.0</code> 符号链接，<code>-DG1D_WITH_UNITREE=ON -DG1D_WITH_LIVOX=ON</code>，Orin 上加 <code>-mcpu=cortex-a78ae</code>，安装到 <code>install/</code>（RPATH 指向 <code>lib/g1d</code>），然后跑 ctest + pytest</td></tr>
+  <tr><td>运行</td><td><code>deploy/run_all.sh</code> 或 <code>deploy/install.sh --enable</code></td><td>前台启动，或安装 4 个 systemd 单元</td></tr>
+</table>
+
+<h3>14.2 仿真体系</h3>
+<div class="grid2">
+  <div class="card"><b>C++ 闭环仿真（<code>src/sim</code>）</b>
+    <ul>
+      <li><code>world</code>：三维盒子世界（箱子、桌子、墙）；</li>
+      <li><code>sensors</code>：Mid-360 射线仿真（非重复扫描、逐点时间）、200 Hz IMU、底盘单线雷达；</li>
+      <li><code>robot</code>：差速底盘运动学；</li>
+      <li><code>nav_sim</code>：把 <code>NavCore</code> 接进闭环，逐周期检查整机（0–1.75 m 高度）是否碰撞；</li>
+      <li><code>g1d_sim_demo</code> + <code>tools/plot_sim_trace.py</code>：生成轨迹图。</li>
+    </ul></div>
+  <div class="card"><b>Python DDS 层仿真</b>
+    <ul>
+      <li><code>mock_robot.py</code>：模拟底盘（接收 <code>cmd_vel_no_limit</code>，发布 odom / scan）；</li>
+      <li><code>fake_nav.py</code>：模拟 g1d_lio + g1d_nav 的全部输出（射线点云、代价地图、A* 路径、跟踪控制），用于没有 C++ DDS 构建的开发机；</li>
+      <li><code>tools/sim_stack.py</code>：fake_nav + mock 底盘 + <b>真实</b> guard + <b>真实</b> web，打开 <code>http://localhost:8080</code> 即可体验全链路。</li>
+    </ul></div>
+</div>
+
+<h3>14.3 测试</h3>
+<table>
+  <tr><th>测试</th><th>内容</th><th>结果（开发机）</th></tr>
+  <tr><td><code>test_common</code></td><td>角度归一化、Pose2D 组合 / 逆 / 相对、PoseBuffer 插值、ClockMapper、YAML</td><td>通过</td></tr>
+  <tr><td><code>test_lio_units</code></td><td>帧聚合逐点时间与 100 ms 切分、时间倒退丢弃半帧、预处理各项过滤</td><td>通过</td></tr>
+  <tr><td><code>test_lio_sim</code></td><td>合成 Mid-360（5000 点 / 帧）+ IMU，正装与倒装两种安装，6.9 m 闭环轨迹</td><td>最大误差 0.05 m / 0.09°，单帧约 7 ms</td></tr>
+  <tr><td><code>test_nav_units</code></td><td>URDF 链、姿态锁定、状态估计锚定与融合、体素层（三维清除保留悬空物）、膨胀公式与 Nav2 一致、规划绕墙与目标修正、MPPI 空地直行</td><td>通过</td></tr>
+  <tr><td><code>test_nav_sim</code></td><td>9 个闭环场景：绕箱、桌面悬空、房间连续相对航点 + 延迟补偿、目标在障碍内、原地转、simple 通 / 堵、LIO 丢失、死路、调试输出与参数热更新</td><td>全部无碰撞</td></tr>
+  <tr><td>pytest（50 项）</td><td>guard 逻辑 14 项、消息、mock、标定算法、NavGPT 桥、Web 各模块 18 项；DDS 回环端到端（guard 停在墙前 0.46 m）；Web 端到端（导航、任务、参数、导出、遥控、急停）</td><td>通过</td></tr>
+</table>
+<div class="warn"><b>尚未在实机上完成：</b><code>g1d_lio</code> / <code>g1d_nav</code> 在开发机上只做了语法检查，需要首次在 Jetson 上编译链接；P0 接口确认、外参与身体链标定、T1–T6 验收都待上机执行（见 <code>PLAN.md</code> 第 6 节）。</div>
+
+<h3>14.4 现场工具</h3>
+<table>
+  <tr><th>工具</th><th>用途</th></tr>
+  <tr><td><code>tools/check_interfaces.py</code></td><td>监听全部话题，报告频率、时间戳偏差、样本内容、<code>cmd_vel_no_limit</code> 写入者、底盘 HTTP 连通性</td></tr>
+  <tr><td><code>tools/cmd_vel_probe.py</code></td><td>实测停发后停车时间、零速刹车距离、底盘限幅、零速是否锁轮</td></tr>
+  <tr><td><code>tools/calib_floor.py</code> + <code>g1d_fk</code></td><td>地面 RANSAC 求雷达横滚 / 俯仰 / 高度；与底盘雷达切片做 ±10° 偏航搜索</td></tr>
+  <tr><td><code>tools/record.py</code></td><td>录制话题为 JSONL.gz（点云 base64）</td></tr>
+  <tr><td><code>tools/nav_cli.py</code></td><td>命令行：goal / rotate / stop / estop / watch</td></tr>
+</table>
+
+<!-- ================================================================== 15 -->
+<h2 id="s-tree">15. 目录结构</h2>
+<pre><code>g1d_ws/
+├─ CMakeLists.txt            <span class="c"># 顶层：选项 G1D_WITH_UNITREE / G1D_WITH_LIVOX / G1D_BUILD_TESTS / G1D_ARCH_FLAGS</span>
+├─ config/
+│   ├─ g1d_nav.yaml          <span class="c"># 所有进程共用参数</span>
+│   └─ mid360s_config.json   <span class="c"># Livox-SDK2 网络配置</span>
+├─ src/
+│   ├─ common/               <span class="c"># SE2/SE3、YAML、ClockMapper、PoseBuffer</span>
+│   ├─ lio/                  <span class="c"># FrameAggregator、preprocess+SelfFilter、LioEstimator、LioHealth</span>
+│   ├─ nav/                  <span class="c"># BodyKinematics、StateEstimator、costmap/(VoxelLayer, ScanLayer, Inflation, LayeredCostmap)</span>
+│   │                        <span class="c"># GlobalPlanner(NavFn)、MppiController、NavCore</span>
+│   ├─ apps/                 <span class="c"># g1d_lio_main / g1d_nav_main / livox_sdk_source / dds_util（仅 Linux）</span>
+│   ├─ sim/                  <span class="c"># C++ 闭环仿真库</span>
+│   ├─ tools/                <span class="c"># g1d_fk、g1d_sim_demo</span>
+│   ├─ ros_shim/             <span class="c"># 最小 ROS 2 API 垫片</span>
+│   └─ pcl_lite/             <span class="c"># PCL 替代</span>
+├─ python/
+│   ├─ g1d_nav_py/           <span class="c"># guard_core/guard_node、nav_client、navgpt_bridge、mock_robot、fake_nav、calib、msgs ...</span>
+│   ├─ g1d_web/              <span class="c"># server/wsproto/hub/app/mapping/mission/acceptance/params + static/</span>
+│   └─ tests/                <span class="c"># pytest</span>
+├─ tests/                    <span class="c"># C++ doctest 单元与闭环仿真测试</span>
+├─ tools/                    <span class="c"># 现场工具与本机仿真栈</span>
+├─ deploy/                   <span class="c"># cyclonedds.xml、g1d.env、run_all.sh、install.sh、systemd/*.service</span>
+├─ scripts/                  <span class="c"># build_host.ps1、build_robot.sh、pack_for_robot.ps1</span>
+├─ third_party/              <span class="c"># fast_lio、nav2（vendored 修改版）+ 子模块</span>
+├─ docs/                     <span class="c"># PROJECT_OVERVIEW / DEPLOYMENT / CALIBRATION / WEB_UI / 本文</span>
+├─ maps/ missions/ logs/     <span class="c"># 运行产物</span>
+└─ _upstream/                <span class="c"># 上游原始克隆（参考用，不入库）</span></code></pre>
+
+<!-- ================================================================== 16 -->
+<h2 id="s-limits">16. 已知限制</h2>
+<ul>
+  <li><b>不保存地图、不做重定位</b>：每次启动 <code>odom</code> 原点就是启动位置，Web 导出的地图只用于查看和记录。全局地图只有机器人周围 20 × 20 m，目标距离被截断到 9 m。</li>
+  <li><b>动态障碍没有运动预测</b>：行人只靠体素射线清除和 guard 反射层处理。</li>
+  <li><b>几何退化场景</b>：长走廊、空旷大厅中 LIO 可能失效（健康监测会报告并停止导航）；<code>degenerate</code> 目前只作为标志报告。</li>
+  <li><b>假设地面水平</b>：<code>T_odom_lio</code> 锚定和高度带判断都假设底盘水平放在平地上；坡道、门槛会影响高度带的准确性。</li>
+  <li><b>导航时身体必须保持姿态</b>：不支持边走边动手臂或升降。</li>
+  <li><b><code>odom_consistent</code> 只报告不处理</b>：LIO 与轮速不一致时目前不会自动终止导航。</li>
+  <li>若干参数（外参、身体链偏移、底盘指令行为）必须在真机上实测，见 <code>docs/DEPLOYMENT.md</code> 和 <code>docs/CALIBRATION.md</code>。</li>
+</ul>
+
+<p class="small" style="margin-top:48px">相关文档：<code>README.md</code>（快速开始）· <code>docs/PROJECT_OVERVIEW.md</code>（项目介绍）· <code>docs/DEPLOYMENT.md</code>（移植与参数）· <code>docs/CALIBRATION.md</code>（标定）· <code>docs/WEB_UI.md</code>（Web 使用）· <code>PLAN.md</code>（计划与进度）。</p>
+
+</main>
+</body>
+</html>
