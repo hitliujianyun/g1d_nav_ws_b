@@ -7,6 +7,8 @@
 
 约束：机器人 PC2 为 Jetson Orin NX（Ubuntu 20.04 / JetPack 5），当前系统不依赖 ROS，CPU 已被 LIO + MPPI 占用一部分，GPU 目前空闲；头部有 Mid-360S（非重复扫描，倒装）和相机。
 
+> **2026-11-18 更新**：后续开发环境改为 RTX 5090 主机与 Jetson Thor。第 1–5 节是按 Orin NX 算力做的选型；新硬件下的模型选型见**第 6 节**，它取代第 3 节中关于学习方法的结论。
+
 ---
 
 ## 1. 现状与问题来源
@@ -126,7 +128,74 @@ Web 地图导出：关键帧（点云 + 位姿）─▶ DUFOMap 离线清理 ─
 - GPL-2.0：M-detector 与 FAST-LIO 同为 GPL-2.0，项目整体已受 GPL-2.0 约束，不引入新的许可证问题；DUFOMap 为 BSD-3。
 - 相机分割只覆盖前方视场，且需要相机-雷达外参和时间同步。
 
-## 6. 参考资料
+## 6. 新硬件条件下的模型选型（RTX 5090 主机 / Jetson Thor）
+
+### 6.1 平台事实
+
+| 项目 | RTX 5090 主机 | Jetson AGX Thor |
+|---|---|---|
+| GPU 架构 / 计算能力 | Blackwell，sm_120 [26] | Blackwell 2560 核，sm_110（CUDA 13 将原 SM101 改名为 SM110）[27][31][32] |
+| 算力 / 内存 | — | 2070 TFLOPS（稀疏 FP4），128 GB LPDDR5X，CPU 14 核 Neoverse-V3AE，功耗 40–130 W [27] |
+| 软件栈 | CUDA 12.8+ / 13 | JetPack 7：Ubuntu 24.04、CUDA 13.0、cuDNN 9.12、TensorRT 10.13 [28]；Isaac ROS 4.0 + ROS 2 Jazzy [29] |
+| 定位 | 数据处理、离线地图清理、**模型训练**、TensorRT 引擎验证 | **机载实时推理**（替换或补充 PC2；需要接入机器人内网 DDS） |
+
+**工具链风险（实测前必须注意）**：
+
+- 稀疏卷积库对 Blackwell 的支持仍不完善：官方 MinkowskiEngine 不支持 sm_120，只有社区分支 / 预编译轮子可用 [26]；spconv 需从源码编译（CUDA 12.8、`CUMM_CUDA_ARCH_LIST=12.0`），部分用户报告运行时问题 [30]。
+- Thor 上部署稀疏卷积模型：Autoware 的 `spconv_cpp` 已有 CUDA 13.0 + sm_110 版本，并在 Thor / JetPack 7 上编译通过 [31][32]；NVIDIA `Lidar_AI_Solution` 的 libspconv 在 2025-11 更新后支持 CUDA 13 [33]。
+- Isaac ROS 4.0 的 nvblox 虽支持 Thor，但**动态模式和人体分割模式都不支持激光雷达输入**（只支持相机）[34]；nvblox C++ 库 v0.0.9（2026-01）才加入激光雷达动态检测 [23]，要等 Isaac ROS 后续版本跟进【需核实最新版本】。
+
+### 6.2 选型思路的变化
+
+算力不再是瓶颈后，结论变成"**几何方法做底座，学习模型补短板**"，而不是用学习模型替换几何方法。原因是：
+
+1. 几何方法（M-detector、DUFOMap）不需要训练数据，直接适用于 Mid-360S + 倒装 + 室内场景；而现成的激光雷达学习模型都在车载多线雷达数据上训练，在稀疏 / 非车载雷达上泛化很差 [7]。
+2. 几何方法有两个固有短板，正好由学习模型补上：
+   - **静止的人**：只检测运动的方法看不到站着不动的人，他之后走开就会留下"人形障碍"；语义模型能按类别识别。
+   - **速度与预测**：几何方法只给出"动 / 不动"，场景流模型能给出每个点的速度，可以做 1–2 s 的占据预测，让 MPPI 提前避让。
+3. 5090 主机让"**几何方法当老师、学习模型当学生**"可行：KTH 的 SeFlow 就是用 DUFOMap 的动态分类结果作为伪标签，自监督训练场景流网络，不需要人工标注 [35]。我们可以用同样的方式在自录的 G1-D 数据上训练。
+
+### 6.3 推荐组合
+
+| 层 | 选型 | 运行位置 | 作用 | 依据 |
+|---|---|---|---|---|
+| A. 在线运动检测（主干） | **M-detector**（不变） | Thor CPU | 逐点动态标签，动态点不进 ikd-Tree、进入短时动态层 | 无需训练、微秒级延迟 [1] |
+| B. 场景流 / 运动分割（增强） | **DeltaFlow** 或 **Flow4D**（OpenSceneFlow 代码库，BSD-3），用 DUFOMap 伪标签在自录数据上微调 | 5090 训练，Thor 推理 | 每点速度 → 动态掩码（与 A 取并集）+ 代价地图中的短时占据预测 | OpenSceneFlow 收录 DeltaFlow（NeurIPS 2025）、Flow4D（RA-L 2025）等 13 种方法并提供预训练权重 [36]；Flow4D 在 RTX 3090 上 15.1 FPS [37]；DeltaFlow 的计算量与帧数无关 [38] |
+| C. 语义：人（含静止） | **YOLO11-seg / YOLO26-seg**（头部相机）→ TensorRT，掩码投影到雷达点 | Thor GPU | 识别静止站立的人，按"人"处理：不入库、进入动态层 | YOLO11n 检测在 Thor 上实测 833 FPS（TensorRT FP16）[39]；分割版本在 Thor 上只有推算值 367 FPS（YOLO11s-seg）[40]，算力绰绰有余，但需实测 |
+| C'. 开放词汇语义（可选） | Grounding DINO / SAM 2（Isaac ROS 4.0 已集成）| Thor GPU | 推车、宠物等非"人"的可移动物体 | Isaac ROS 4.0 新增 GroundingDINO 与 Segment Anything 2 支持 [29] |
+| D. 360° 激光语义（研究项） | **Sonata / PTv3**，用 C 的投影标签 + DUFOMap 标签微调 | 5090 训练，Thor 推理 | 相机视场外也能识别人 | 第三方优化后在 Thor 上端到端 31 ms / 帧（原生 PyTorch 为 715 ms）[41]；需要做部署优化和标注，风险最高 |
+| E. 离线地图清理 | **DUFOMap**（不变） | 5090 主机 | 导出 / 重定位用的地图去拖影 | 第 2 节基准 [4][7] |
+| F. 代价地图 | 静态体素层（视场锥加速衰减，盲区保护）+ 动态层（TTL 0.5–1 s）+ **预测层**（B 的速度，匀速外推 1–2 s） | Thor CPU | 离开的动态物体及时消失；迎面而来的人提前避让 | — |
+
+**融合规则**：一个点只要被 A、B、C 任一判为动态（或属于"人"），就不进入 ikd-Tree 和静态体素层，只进入动态层。宁可把少量静态点当作动态处理，因为静态结构会被后续观测补回；漏掉的动态点则会留下拖影。
+
+### 6.4 仍不推荐的方案
+
+- **4DMOS / MapMOS**：依赖 MinkowskiEngine，Blackwell 上只有社区分支可用 [26]；在稀疏雷达上表现差 [7]。在同一个 KTH 代码生态里，场景流方法（层 B）更合适。
+- **nvblox 动态模式直接接 Mid-360S**：Isaac ROS 4.0 不支持激光雷达输入的动态模式 [34]，等后续版本再评估。
+- **只用学习模型、去掉几何方法**：没有足够的 G1-D 室内标注数据，泛化无法保证；几何方法的确定性对安全更重要。
+
+### 6.5 数据与训练流程（5090 主机）
+
+1. **采集**：用 `tools/record.py`（或 rosbag2）录制 Mid-360S 原始点云 + LIO 位姿 + 头部相机图像，覆盖走廊、办公室、人员走动 / 站立 / 推车、门开合等场景，建议 ≥ 2 小时。
+2. **伪标签**：在 5090 上用 DUFOMap（离线模式，精度高于在线模式 [4]）为每帧点云生成动态 / 静态标签；把相机分割（C）的投影标签合并进来，用于标注"静止的人"。
+3. **训练**：在 OpenSceneFlow 中用伪标签微调 DeltaFlow / Flow4D（SeFlow 式自监督损失）[35][36]；抽取少量帧人工核对，作为验证集。
+4. **部署**：导出 ONNX → TensorRT（稀疏卷积部分使用 `spconv_cpp` 的 cu130 / sm_110 版本 [31]），在 Thor 上测端到端延迟（目标 < 50 ms / 帧，与 10 Hz 雷达匹配）。
+5. **闭环**：线上难例（误检、漏检）回流到训练集。
+
+### 6.6 分期（替代第 4 节的二、三期）
+
+| 阶段 | 内容 | 平台 |
+|---|---|---|
+| 一期 | 代价地图视场锥衰减 + 盲区保护 + 动态层（同第 4 节一期） | 现有 Orin NX 即可 |
+| 二期 | M-detector 接入（A）+ DUFOMap 导出清理（E）；开始录制训练数据 | Orin NX / Thor |
+| 三期 | 相机人体分割投影（C），处理静止的人 | Thor |
+| 四期 | DUFOMap 伪标签 → DeltaFlow / Flow4D 训练（B）→ 预测层（F） | 5090 训练，Thor 推理 |
+| 研究项 | Sonata / PTv3 360° 激光语义（D）、nvblox 激光雷达动态模式 | 5090 / Thor |
+
+**说明**：Thor 搭配的软件栈是 Ubuntu 24.04 + ROS 2 Jazzy（Nav2 含 MPPI），与正在规划的 ROS 2 版本工程天然一致；上述各层在 ROS 2 版本中可以直接实现为独立节点。
+
+## 7. 参考资料
 
 1. Wu et al., *Moving event detection from LiDAR point streams*, Nature Communications 2024 — https://www.nature.com/articles/s41467-023-44554-8
 2. hku-mars/M-detector README 与 LICENSE（GPL-2.0）— https://github.com/hku-mars/M-detector
@@ -153,3 +222,19 @@ Web 地图导出：关键帧（点云 + 位姿）─▶ DUFOMap 离线清理 ─
 23. nvblox CHANGELOG v0.0.9（2026-01-27）— https://github.com/nvidia-isaac/nvblox/blob/public/CHANGELOG.md
 24. Isaac ROS nvblox 支持平台（release-3.2）— https://nvidia-isaac-ros.github.io/v/release-3.2/repositories_and_packages/isaac_ros_nvblox/index.html
 25. nvblox 安装与支持平台 — https://nvidia-isaac.github.io/nvblox/public/pages/installation.html
+26. MinkowskiEngine Issue #620（RTX 5090 / sm_120 不支持，社区分支与预编译轮子）— https://github.com/NVIDIA/MinkowskiEngine/issues/620
+27. NVIDIA Jetson Thor 产品页 — https://www.nvidia.com/en-us/autonomous-machines/embedded-systems/jetson-thor/
+28. JetPack 7.0 / Jetson Linux 38.2 发布说明 — https://forums.developer.nvidia.com/t/jetpack-7-0-jetson-linux-38-2-for-nvidia-jetson-thor-is-now-live/343127
+29. Isaac ROS 4.0 Release Notes（Thor、JetPack 7、GroundingDINO、SAM 2）— https://nvidia-isaac-ros.github.io/v/release-4.0/releases/index.html
+30. spconv Issue #746（Blackwell / CUDA 12.8 源码编译）— https://github.com/traveller59/spconv/issues/746
+31. autowarefoundation/spconv_cpp（CUDA 13.0，含 sm_110）— https://github.com/autowarefoundation/spconv_cpp
+32. Autoware commit dfcaabd（Thor 上 CUDA 13 / sm_110 验证）— https://github.com/autowarefoundation/autoware/commit/dfcaabd06316333bbfc74476908e8ba5e5ae3755
+33. Lidar_AI_Solution Issue #347（libspconv 支持 CUDA 13）— https://github.com/NVIDIA-AI-IOT/Lidar_AI_Solution/issues/347
+34. Isaac ROS 4.0 nvblox Isaac Sim 示例（动态 / 人体分割模式不支持激光雷达）— https://nvidia-isaac-ros.github.io/v/release-4.0/concepts/scene_reconstruction/nvblox/tutorials/tutorial_isaac_sim.html
+35. Zhang et al., *SeFlow: A Self-Supervised Scene Flow Method in Autonomous Driving*, ECCV 2024 — https://arxiv.org/abs/2407.01702 ；https://github.com/KTH-RPL/SeFlow
+36. KTH-RPL/OpenSceneFlow — https://github.com/KTH-RPL/OpenSceneFlow
+37. Kim et al., *Flow4D*, RA-L 2025 — https://arxiv.org/abs/2407.07995
+38. Kin-Zhang/DeltaFlow（NeurIPS 2025，BSD-3）— https://github.com/kin-zhang/DeltaFlow
+39. EdgeAIStack：YOLO11n on Jetson Thor T5000（引用 Ultralytics 实测数据）— https://edgeaistack.ai/benchmarks/jetson-thor-t5000/yolo11/n/
+40. EdgeAIStack：YOLO11s-seg on Jetson Thor T5000（推算值）— https://edgeaistack.ai/benchmarks/jetson-thor-t5000/yolo11-seg/s/
+41. ZETIC：Sonata (PTv3) on Jetson AGX Thor（第三方优化，端到端 31 ms）— https://zetic.ai/demos/sonata/ ；Sonata：https://github.com/facebookresearch/sonata
