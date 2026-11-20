@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>g1d_ws：从点云到导航代价地图</title>
+<style>
+  :root {
+    --bg: #f7f8fa; --fg: #1f2329; --muted: #5c6370; --line: #dfe3ea; --card: #ffffff;
+    --accent: #2563eb; --accent-soft: #e8f0fe; --green: #15803d; --green-soft: #e7f6ec;
+    --orange: #c2410c; --orange-soft: #fff1e6; --red: #b91c1c; --red-soft: #fdeaea;
+    --purple: #7c3aed; --purple-soft: #f1ebfe; --code-bg: #f1f3f6;
+    --mono: "JetBrains Mono", "Cascadia Code", Consolas, "Courier New", monospace;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; font: 15px/1.75 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+         color: var(--fg); background: var(--bg); }
+  nav#toc { position: fixed; top: 0; left: 0; bottom: 0; width: 280px; overflow-y: auto; padding: 22px 16px 40px;
+            background: #111827; color: #cbd5e1; font-size: 13.5px; }
+  nav#toc h2 { color: #fff; font-size: 16px; margin: 0 0 4px; }
+  nav#toc .sub { color: #94a3b8; font-size: 12px; margin-bottom: 16px; }
+  nav#toc a { color: #cbd5e1; text-decoration: none; display: block; padding: 3px 8px; border-radius: 4px; }
+  nav#toc a:hover { background: #1f2937; color: #fff; }
+  nav#toc ol { list-style: none; padding: 0; margin: 0; counter-reset: s; }
+  nav#toc ol > li > a::before { counter-increment: s; content: counter(s) ". "; color: #64748b; }
+  nav#toc ol ol { padding-left: 16px; counter-reset: none; }
+  nav#toc ol ol a { font-size: 12.5px; color: #9aa5b6; }
+  nav#toc ol ol a::before { content: none !important; }
+  main { margin-left: 280px; padding: 36px 56px 120px; max-width: 1180px; }
+  h1 { font-size: 30px; margin: 0 0 6px; }
+  h2 { font-size: 23px; margin: 56px 0 14px; padding-bottom: 8px; border-bottom: 2px solid var(--line); }
+  h3 { font-size: 18px; margin: 32px 0 10px; color: #111827; }
+  h4 { font-size: 15.5px; margin: 22px 0 8px; color: #374151; }
+  p { margin: 8px 0 12px; }
+  a { color: var(--accent); }
+  code { font-family: var(--mono); font-size: 13px; background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+  pre { font-family: var(--mono); font-size: 12.8px; line-height: 1.6; background: #0f172a; color: #e2e8f0;
+        padding: 14px 16px; border-radius: 8px; overflow-x: auto; }
+  pre code { background: none; padding: 0; color: inherit; font-size: inherit; }
+  pre .c { color: #7c8ba1; } pre .k { color: #93c5fd; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0 18px; background: var(--card); font-size: 14px; }
+  th, td { border: 1px solid var(--line); padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: #f1f4f9; font-weight: 600; white-space: nowrap; }
+  td code { white-space: nowrap; }
+  .lead { font-size: 16.5px; color: #374151; }
+  .meta { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px 20px; margin: 14px 0; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .stat { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .stat b { display: block; font-size: 22px; margin-bottom: 2px; color: var(--accent); }
+  .stat span { color: var(--muted); font-size: 13px; }
+  .note, .warn, .tip, .key { border-left: 4px solid; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 14.3px; }
+  .note { background: var(--accent-soft); border-color: var(--accent); }
+  .warn { background: var(--orange-soft); border-color: var(--orange); }
+  .tip  { background: var(--green-soft); border-color: var(--green); }
+  .key  { background: var(--purple-soft); border-color: var(--purple); }
+  .note > b:first-child, .warn > b:first-child, .tip > b:first-child, .key > b:first-child { margin-right: 8px; }
+  .tag { display: inline-block; font-size: 12px; padding: 0 7px; border-radius: 10px; margin-right: 4px; font-weight: 600; }
+  .t-yes { background: var(--green-soft); color: var(--green); }
+  .t-no { background: var(--red-soft); color: var(--red); }
+  .t-opt { background: var(--accent-soft); color: var(--accent); }
+  .t-later { background: var(--purple-soft); color: var(--purple); }
+  .steps { counter-reset: st; list-style: none; padding: 0; margin: 12px 0; }
+  .steps > li { position: relative; padding: 10px 14px 10px 52px; margin: 8px 0; background: var(--card);
+                border: 1px solid var(--line); border-radius: 8px; }
+  .steps > li::before { counter-increment: st; content: counter(st); position: absolute; left: 12px; top: 10px;
+                        width: 28px; height: 28px; border-radius: 50%; background: var(--accent); color: #fff;
+                        font-weight: 700; text-align: center; line-height: 28px; font-size: 13px; }
+  .steps.green > li::before { background: var(--green); }
+  .steps.orange > li::before { background: var(--orange); }
+  .steps.purple > li::before { background: var(--purple); }
+  .timeline { position: relative; margin: 18px 0; padding-left: 26px; border-left: 3px solid var(--line); }
+  .timeline .ev { position: relative; margin: 0 0 18px; background: var(--card); border: 1px solid var(--line);
+                  border-radius: 8px; padding: 10px 14px; }
+  .timeline .ev::before { content: ""; position: absolute; left: -36px; top: 14px; width: 15px; height: 15px;
+                          border-radius: 50%; background: var(--accent); border: 3px solid var(--bg); }
+  .timeline .ev.final::before { background: var(--green); }
+  .timeline .ev h4 { margin: 0 0 4px; }
+  .timeline .ev .when { color: var(--muted); font-size: 12.5px; }
+  figure { margin: 18px 0; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+  figure svg { width: 100%; height: auto; display: block; }
+  figcaption { color: var(--muted); font-size: 13px; text-align: center; margin-top: 6px; }
+  svg text { font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+  .small { font-size: 13px; color: var(--muted); }
+  details { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px; margin: 10px 0; }
+  details summary { cursor: pointer; font-weight: 600; }
+  .formula { font-family: var(--mono); background: var(--card); border: 1px dashed #b6c2d6; border-radius: 8px;
+             padding: 10px 14px; margin: 10px 0; font-size: 13.5px; overflow-x: auto; white-space: pre; }
+  ol.refs { font-size: 13px; color: #374151; padding-left: 26px; }
+  ol.refs li { margin: 3px 0; word-break: break-all; }
+  @media (max-width: 1100px) { nav#toc { display: none; } main { margin-left: 0; padding: 24px; }
+    .grid2, .grid3, .grid4 { grid-template-columns: 1fr; } }
+  @media print { nav#toc { display: none; } main { margin: 0; max-width: none; } h2 { page-break-before: always; } }
+</style>
+</head>
+<body>
+
+<nav id="toc">
+  <h2>点云 → 代价地图</h2>
+  <div class="sub">Mid-360S · FAST-LIO2 · Nav2 Costmap2D · 免 ROS</div>
+  <ol>
+    <li><a href="#s-overview">一图看懂</a></li>
+    <li><a href="#s-frames">坐标系与位姿链</a></li>
+    <li><a href="#s-lio">g1d_lio：从雷达包到配准点云</a>
+      <ol><li><a href="#s-agg">取数与帧聚合</a></li><li><a href="#s-pre">预处理</a></li>
+      <li><a href="#s-fl">FAST-LIO2</a></li><li><a href="#s-out">动态标注与输出</a></li></ol></li>
+    <li><a href="#s-recv">g1d_nav：接收、配对、换到 odom</a></li>
+    <li><a href="#s-cm">代价地图的结构</a></li>
+    <li><a href="#s-voxel">体素层（三维障碍）</a>
+      <ol><li><a href="#s-v-col">高度位掩码</a></li><li><a href="#s-v-mark">标记</a></li>
+      <li><a href="#s-v-ray">三维射线清除</a></li><li><a href="#s-v-see">视线穿透清除</a></li></ol></li>
+    <li><a href="#s-dyn">动态层</a></li>
+    <li><a href="#s-scan">底盘雷达层</a></li>
+    <li><a href="#s-update">每个周期的合成</a></li>
+    <li><a href="#s-infl">膨胀层</a></li>
+    <li><a href="#s-use">谁在用代价地图</a></li>
+    <li><a href="#s-timing">时序与频率</a></li>
+    <li><a href="#s-journey">一个点的完整旅程</a></li>
+    <li><a href="#s-params">参数速查</a></li>
+    <li><a href="#s-code">代码位置</a></li>
+  </ol>
+</nav>
+
+<main>
+<h1>从点云到导航代价地图</h1>
+<div class="meta">g1d_ws · 宇树 G1-D · 头部倒装 Livox Mid-360S + 底盘单线雷达 · 本文按当前代码逐步说明 · 相关文档：<code>HOW_IT_WORKS.html</code>、<code>DYNAMIC_OBJECTS.html</code></div>
+
+<!-- ========================================================================================= -->
+<h2 id="s-overview">1. 一图看懂</h2>
+<p class="lead">头部 Mid-360S 的原始点包经过<b>帧聚合 → 预处理 → FAST-LIO2 配准 → 动态标注</b>，变成世界坐标系下的"配准点云"；导航进程把它换到 <code>odom</code> 坐标系，写进<b>体素层</b>（三维障碍）和<b>动态层</b>（运动物体），与底盘单线雷达的<b>扫描层</b>合成，最后经<b>膨胀层</b>得到 MPPI 和 NavFn 使用的代价地图。</p>
+
+<figure>
+<svg viewBox="0 0 1000 400" role="img" aria-label="点云到代价地图的完整流程">
+  <defs><marker id="a1" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#64748b"/></marker></defs>
+  <style>.b{fill:#fff;stroke:#94a3b8;stroke-width:1.4}.l1{fill:#e8f0fe;stroke:#2563eb}.n1{fill:#e7f6ec;stroke:#15803d}.g1{fill:#fff1e6;stroke:#c2410c}.t{font-size:13px;fill:#1f2329}.s{font-size:11.5px;fill:#5c6370}.ar{stroke:#64748b;stroke-width:1.5;fill:none;marker-end:url(#a1)}</style>
+  <rect x="10" y="20" width="430" height="200" rx="10" fill="none" stroke="#2563eb" stroke-dasharray="4 4"/><text x="20" y="14" class="s" fill="#2563eb">g1d_lio（C++，10 Hz）</text>
+  <rect x="25" y="40" width="120" height="58" rx="8" class="b"/><text x="85" y="63" text-anchor="middle" class="t">Mid-360S 点包</text><text x="85" y="82" text-anchor="middle" class="s">20 万点/秒 + IMU</text>
+  <rect x="165" y="40" width="120" height="58" rx="8" class="b l1"/><text x="225" y="63" text-anchor="middle" class="t">帧聚合</text><text x="225" y="82" text-anchor="middle" class="s">100 ms 一帧</text>
+  <rect x="305" y="40" width="120" height="58" rx="8" class="b l1"/><text x="365" y="63" text-anchor="middle" class="t">预处理</text><text x="365" y="82" text-anchor="middle" class="s">盲区 / 自身点</text>
+  <rect x="165" y="140" width="120" height="58" rx="8" class="b l1"/><text x="225" y="163" text-anchor="middle" class="t">FAST-LIO2</text><text x="225" y="182" text-anchor="middle" class="s">去畸变 + 配准</text>
+  <rect x="305" y="140" width="120" height="58" rx="8" class="b l1"/><text x="365" y="163" text-anchor="middle" class="t">M-detector</text><text x="365" y="182" text-anchor="middle" class="s">动 / 静标签</text>
+  <path d="M145,69 L162,69" class="ar"/><path d="M285,69 L302,69" class="ar"/><path d="M365,98 C365,120 225,115 225,137" class="ar"/><path d="M285,169 L302,169" class="ar"/>
+
+  <rect x="450" y="140" width="210" height="58" rx="8" class="b"/><text x="555" y="160" text-anchor="middle" class="t">DDS</text><text x="555" y="177" text-anchor="middle" class="s">registered_cloud（x y z dynamic）</text><text x="555" y="191" text-anchor="middle" class="s">+ lio_odom（同一时间戳）</text>
+  <path d="M425,169 L447,169" class="ar"/>
+
+  <rect x="10" y="250" width="980" height="140" rx="10" fill="none" stroke="#15803d" stroke-dasharray="4 4"/><text x="20" y="244" class="s" fill="#15803d">g1d_nav（C++，20 Hz）</text>
+  <rect x="25" y="275" width="150" height="58" rx="8" class="b n1"/><text x="100" y="298" text-anchor="middle" class="t">按时间戳配对</text><text x="100" y="317" text-anchor="middle" class="s">LIO → odom 变换</text>
+  <rect x="200" y="265" width="170" height="36" rx="8" class="b n1"/><text x="285" y="288" text-anchor="middle" class="t">体素层（三维）</text>
+  <rect x="200" y="307" width="170" height="36" rx="8" class="b n1"/><text x="285" y="330" text-anchor="middle" class="t">动态层（0.8 s）</text>
+  <rect x="200" y="349" width="170" height="34" rx="8" class="b n1"/><text x="285" y="371" text-anchor="middle" class="t">扫描层（底盘雷达）</text>
+  <rect x="400" y="275" width="160" height="58" rx="8" class="b n1"/><text x="480" y="298" text-anchor="middle" class="t">合成 + 膨胀</text><text x="480" y="317" text-anchor="middle" class="s">Costmap2D（Nav2 原码）</text>
+  <rect x="590" y="265" width="190" height="36" rx="8" class="b"/><text x="685" y="288" text-anchor="middle" class="t">局部 6 m · 0.05 m → MPPI</text>
+  <rect x="590" y="310" width="190" height="36" rx="8" class="b"/><text x="685" y="333" text-anchor="middle" class="t">全局 20 m · 0.1 m → NavFn</text>
+  <rect x="810" y="275" width="165" height="58" rx="8" class="b g1"/><text x="892" y="298" text-anchor="middle" class="t">Web 显示</text><text x="892" y="317" text-anchor="middle" class="s">OccupancyGrid</text>
+  <path d="M555,198 C555,230 100,230 100,272" class="ar"/>
+  <path d="M175,295 L197,284" class="ar"/><path d="M175,305 L197,325" class="ar"/>
+  <path d="M370,283 L397,295" class="ar"/><path d="M370,325 L397,312" class="ar"/><path d="M370,366 L397,322" class="ar"/>
+  <path d="M560,295 L587,284" class="ar"/><path d="M560,312 L587,326" class="ar"/><path d="M780,300 L807,304" class="ar"/>
+  <rect x="700" y="40" width="270" height="110" rx="10" class="b g1"/><text x="835" y="66" text-anchor="middle" class="t">g1d_base_guard（Python）</text><text x="835" y="88" text-anchor="middle" class="s">底盘 LaserScan → chassis_scan 点云</text><text x="835" y="106" text-anchor="middle" class="s">（base_link，转发给 g1d_nav）</text><text x="835" y="128" text-anchor="middle" class="s">+ 用 obstacle_points 做反射停车</text>
+  <path d="M760,150 C760,210 250,220 260,346" class="ar" stroke-dasharray="5 4"/>
+</svg>
+<figcaption>图 1　完整流程：上半部分在 <code>g1d_lio</code>，下半部分在 <code>g1d_nav</code>；底盘雷达经 guard 转发后进入扫描层</figcaption>
+</figure>
+
+<div class="grid4">
+  <div class="stat"><b>10 Hz</b><span>雷达帧 / LIO 输出频率</span></div>
+  <div class="stat"><b>20 Hz</b><span>局部代价地图刷新（每个控制周期）</span></div>
+  <div class="stat"><b>18 层</b><span>体素高度层：0.08–1.85 m，每 0.1 m 一层</span></div>
+  <div class="stat"><b>0.55 m</b><span>膨胀半径（内切半径 0.28 m）</span></div>
+</div>
+
+<div class="note"><b>设计要点</b>代价地图用的是 <b>Nav2 Costmap2D 原码</b>（经 <code>ros_shim</code> 免 ROS 编译），图层是本项目实现的：体素层保留了"每列高度位掩码 + 三维射线"的 Nav2 VoxelLayer 思路，所以<b>桌面、货架隔板这类悬空障碍</b>在二维代价地图里也能看到，而且不会被斜向地面的射线误清除。</div>
+
+<!-- ========================================================================================= -->
+<h2 id="s-frames">2. 坐标系与位姿链</h2>
+<table>
+<tr><th>坐标系</th><th>含义</th><th>谁定义</th></tr>
+<tr><td><code>livox</code></td><td>Mid-360S 雷达本体（头部倒装，z 朝下）</td><td>雷达</td></tr>
+<tr><td><code>livox_imu</code></td><td>雷达内置 IMU；与 livox 的外参 <code>lio.extrinsic_T/R</code>（出厂值）</td><td>雷达</td></tr>
+<tr><td><code>odom_lio</code></td><td>FAST-LIO 世界系 = 启动时刻的 IMU 坐标系（因倒装，z 大致朝下）</td><td>g1d_lio</td></tr>
+<tr><td><code>odom</code></td><td>导航坐标系：启动时刻的 <code>base_link</code>（重力对齐、z 向上、原点在地面）</td><td>g1d_nav</td></tr>
+<tr><td><code>base_link</code></td><td>底盘中心，地面高度</td><td>URDF</td></tr>
+</table>
+<figure>
+<svg viewBox="0 0 1000 150" role="img" aria-label="位姿链">
+  <style>.f{fill:#111827}.ft{font-size:13px;fill:#fff;font-family:Consolas,monospace}.tt{font-size:11.5px;fill:#5c6370}</style>
+  <rect x="10" y="50" width="110" height="36" rx="6" class="f"/><text x="65" y="73" text-anchor="middle" class="ft">odom</text>
+  <rect x="250" y="50" width="120" height="36" rx="6" class="f"/><text x="310" y="73" text-anchor="middle" class="ft">odom_lio</text>
+  <rect x="500" y="50" width="120" height="36" rx="6" class="f"/><text x="560" y="73" text-anchor="middle" class="ft">livox_imu</text>
+  <rect x="750" y="50" width="110" height="36" rx="6" class="f"/><text x="805" y="73" text-anchor="middle" class="ft">livox</text>
+  <line x1="120" y1="68" x2="250" y2="68" stroke="#94a3b8" stroke-width="2"/><text x="185" y="42" text-anchor="middle" class="tt">T_odom_lio</text><text x="185" y="104" text-anchor="middle" class="tt">首帧 LIO 时锚定，之后固定</text>
+  <line x1="370" y1="68" x2="500" y2="68" stroke="#94a3b8" stroke-width="2"/><text x="435" y="42" text-anchor="middle" class="tt">T_lio_imu(t)</text><text x="435" y="104" text-anchor="middle" class="tt">FAST-LIO 每帧输出</text>
+  <line x1="620" y1="68" x2="750" y2="68" stroke="#94a3b8" stroke-width="2"/><text x="685" y="42" text-anchor="middle" class="tt">T_imu_lidar</text><text x="685" y="104" text-anchor="middle" class="tt">出厂外参</text>
+  <text x="500" y="138" text-anchor="middle" class="tt">base_link 与 livox 之间是身体运动学链：AGV → 升降 → 腰俯仰 → 腰偏航 → head → (head_to_livox) → livox，按关节反馈实时计算</text>
+</svg>
+<figcaption>图 2　点云从雷达到 odom 的变换链</figcaption>
+</figure>
+<ul>
+  <li><b>锚定 <code>T_odom_lio</code></b>：第一帧可用的 LIO 位姿到来时，<code>T_odom_lio = T_base_imu · T_lio_imu⁻¹</code>（<code>T_base_imu</code> 由身体运动学算出），即把 odom 原点定在"此刻的底盘"，假设底盘水平放在地面上。之后固定不变。</li>
+  <li><b>为什么要这一步</b>：FAST-LIO 的世界系是倒装 IMU 的初始姿态，高度方向不是"离地高度"。换到 <code>odom</code> 后，<b>点的 z 就是离地高度</b>，代价地图才能用固定的高度带（0.08–1.85 m）判断"是不是障碍"。</li>
+  <li><b>雷达原点</b>：射线清除需要知道射线从哪里出发：<code>origin = T_odom_lio · T_lio_imu · T_imu_lidar</code> 的平移部分（每帧随头部位置变化，升降、腰部动作都会反映进来）。</li>
+</ul>
+
+<!-- ========================================================================================= -->
+<h2 id="s-lio">3. g1d_lio：从雷达包到配准点云</h2>
+
+<h3 id="s-agg">3.1 取数与帧聚合</h3>
+<ul>
+  <li><b>数据源</b>（<code>lidar.source</code>）：<code>livox_sdk2</code> 直连雷达读取点包和 IMU 包；或 <code>unitree_topic</code> 订阅宇树服务发布的点云（雷达被宇树服务占用时）。</li>
+  <li><b>帧聚合</b>（<code>FrameAggregator</code>）：每个点包带一个时间戳和总时长，包内第 i 个点的时间 = 包时间戳 + i × 点间隔。按 <code>lidar.frame_ms</code>（100 ms）切成连续帧，每个点记录相对帧起点的偏移（毫秒），供 FAST-LIO 去畸变。时间倒退（雷达重启）时丢弃半帧。坐标从毫米换成米。</li>
+</ul>
+
+<h3 id="s-pre">3.2 预处理（<code>preprocessFrame</code>）</h3>
+<ol class="steps">
+  <li><b>回波标签过滤</b>：Livox tag 第 4–5 位只接受 0x00 / 0x10（正常回波），与 FAST-LIO 上游相同。</li>
+  <li><b>抽稀</b>：每 <code>point_filter_num</code> 个有效点取 1 个（配置为 1，即不抽稀）；去掉与上一点完全重合的重复点。</li>
+  <li><b>距离过滤</b>：去掉 <code>blind</code>（0.6 m）以内的近点（机器人自身、近处噪点）和 <code>max_range</code>（60 m）以外的点。</li>
+  <li><b>自身点过滤</b>：<code>self_filter.boxes</code> 是 head_link 坐标系下的盒子（头、躯干、立柱、收拢的手臂），盒内的点删除，防止机器人把自己当成障碍。</li>
+</ol>
+
+<h3 id="s-fl">3.3 FAST-LIO2</h3>
+<ol class="steps">
+  <li><b>IMU 去畸变</b>：用 200 Hz IMU 把帧内每个点按其时间偏移补偿到帧结束时刻，消除机器人运动造成的"拖尾"。</li>
+  <li><b>降采样</b>：0.3 m 体素降采样后参与配准。</li>
+  <li><b>迭代误差状态卡尔曼滤波（IESKF）</b>：点到 ikd-Tree 地图中局部平面的距离作为观测，迭代更新位姿。</li>
+  <li><b>地图更新</b>：配准后的点插入 ikd-Tree 增量地图（动态点除外，见 3.4）。</li>
+  <li><b>输出</b>：IMU 在 <code>odom_lio</code> 下的位姿、速度、重力方向，以及<b>去畸变后的完整当前帧</b>变换到 <code>odom_lio</code> 的点云。</li>
+</ol>
+<p>同时运行<b>健康监测</b>（有效点数、单帧跳变、处理耗时、高度漂移、退化）和<b>时钟映射</b>（雷达时间 → 主机时间，用滑动窗口最小偏移），输出的时间戳都是主机时间。</p>
+
+<h3 id="s-out">3.4 动态标注与输出</h3>
+<ul>
+  <li><b>M-detector</b>：在 EKF 更新之后对当前帧逐点判断"是否运动点"，运动点不插入 ikd-Tree（详见 <code>DYNAMIC_OBJECTS.html</code>）。</li>
+  <li><b>降采样输出</b>：静态点和运动点<b>分别</b>做 5 cm 体素降采样（<code>lio.publish_cloud_voxel</code>），避免同一体素里动静混合。</li>
+  <li><b>发布</b>：
+    <ul>
+      <li><code>rt/nav/registered_cloud</code>：PointCloud2，字段 <code>x y z dynamic</code>（float32，<code>point_step</code> 16），坐标系 <code>odom_lio</code>；</li>
+      <li><code>rt/nav/lio_odom</code>：同一时间戳的 IMU 位姿；</li>
+      <li><code>rt/nav/lio_health</code>：JSON，含 <code>ok</code>、错误列表、动态点数、耗时等。</li>
+    </ul></li>
+</ul>
+
+<!-- ========================================================================================= -->
+<h2 id="s-recv">4. g1d_nav：接收、配对、换到 odom</h2>
+<ol class="steps green">
+  <li><b>收消息</b>：DDS 回调线程把点云、位姿、健康状态放进各自的队列（Mailbox），主循环每 50 ms 取一次。点云按 <code>dynamic</code> 字段拆成静态点和运动点。</li>
+  <li><b>时间戳配对</b>：在最近 30 个 <code>lio_odom</code> 里找时间戳相差 &lt; 1 ms 的那个，组成 <code>LioInput</code>（位姿 <code>T_lio_imu</code>、雷达原点、静态点、运动点）。找不到就丢弃这帧点云。</li>
+  <li><b>健康判断</b>：只有 <code>lio_health.ok = true</code> 且健康消息与该帧相差 &lt; 0.5 s，才标记 <code>ok</code>；不 ok 的帧不进代价地图，状态估计会判定 LIO 丢失。</li>
+  <li><b>坐标变换</b>（<code>NavCore::onLio</code>）：所有点乘以 <code>T_odom_lio</code> 换到 odom；雷达原点同样变换。</li>
+  <li><b>写入两张代价地图</b>：同一批点同时写入局部和全局代价地图（静态点 → 体素层标记；所有点 → 清除；运动点 → 动态层）。</li>
+  <li><b>给 guard 的障碍点</b>：另外把<b>全部点</b>（动静都算）换到 <code>base_link</code>，保留高度带内、3 m 以内、车身轮廓以外的点，按 5 cm 去重后发布 <code>rt/nav/obstacle_points</code>，供 guard 反射层使用。</li>
+</ol>
+
+<!-- ========================================================================================= -->
+<h2 id="s-cm">5. 代价地图的结构</h2>
+<table>
+<tr><th>地图</th><th>尺寸 / 分辨率</th><th>栅格数</th><th>体素层范围（标记 / 清除）</th><th>刷新</th><th>用途</th></tr>
+<tr><td><b>局部</b></td><td>6 × 6 m，0.05 m</td><td>120 × 120</td><td>5 m / 6 m，每条射线都清除</td><td>每个控制周期（20 Hz）</td><td>MPPI 局部控制、路径阻挡判断、可通行扇区、末段接近</td></tr>
+<tr><td><b>全局</b></td><td>20 × 20 m，0.1 m</td><td>200 × 200</td><td>8 m / 9 m，每 2 条射线取 1 条清除</td><td>重规划时（1 Hz，路径被挡时提前，最快 0.2 s 一次）</td><td>NavFn 全局规划、目标合法性检查</td></tr>
+</table>
+<ul>
+  <li><b>滚动窗口</b>：两张地图都以机器人为中心随之移动（同 Nav2 的 <code>rolling_window</code>）。原点按整格平移，重叠部分保留，新进入的格子清空。所以没有"全局地图"意义上的长期记忆：离开窗口的障碍就被忘掉。</li>
+  <li><b>图层组成</b>：每张代价地图 = 一个 Nav2 <code>Costmap2D</code> 主栅格 + 体素层 + 动态层 + 扫描层 + 膨胀层。前三层各自保存状态，每个周期重新合成到主栅格，再做膨胀。</li>
+  <li><b>代价值</b>（Nav2 定义）：0 = 空闲；1–252 = 膨胀代价；253 = 内切障碍（车体中心在此必碰撞）；254 = 致命障碍；255 = 未知。</li>
+</ul>
+
+<!-- ========================================================================================= -->
+<h2 id="s-voxel">6. 体素层（三维障碍）</h2>
+
+<h3 id="s-v-col">6.1 高度位掩码</h3>
+<p>体素层每个二维栅格存一个 32 位整数，每一位代表一个高度层：从 <code>z_min</code> 0.08 m 到 <code>z_max</code> 1.85 m，每 0.1 m 一层，共 18 层。某一位为 1 表示"这个格子的这个高度有障碍"。另有每列的标记计数和最后标记时间。</p>
+<figure>
+<svg viewBox="0 0 1000 260" role="img" aria-label="体素列与悬空障碍">
+  <style>.t{font-size:13px;fill:#1f2329}.s{font-size:11.5px;fill:#5c6370}</style>
+  <line x1="30" y1="230" x2="970" y2="230" stroke="#94a3b8" stroke-width="2"/><text x="40" y="250" class="s">地面 z = 0</text>
+  <line x1="30" y1="222" x2="970" y2="222" stroke="#cbd5e1" stroke-dasharray="4 3"/><text x="975" y="225" class="s" text-anchor="end">z_min 0.08 m（以下视为地面）</text>
+  <line x1="30" y1="40" x2="970" y2="40" stroke="#cbd5e1" stroke-dasharray="4 3"/><text x="975" y="34" class="s" text-anchor="end">z_max 1.85 m（以上不算障碍）</text>
+  <g transform="translate(120,0)">
+    <text x="30" y="20" text-anchor="middle" class="t">箱子</text>
+    <rect x="10" y="150" width="40" height="80" fill="#e5e7eb" stroke="#94a3b8"/>
+    <g fill="#c2410c" opacity="0.85"><rect x="60" y="212" width="18" height="10"/><rect x="60" y="202" width="18" height="10"/><rect x="60" y="192" width="18" height="10"/><rect x="60" y="182" width="18" height="10"/><rect x="60" y="172" width="18" height="10"/><rect x="60" y="162" width="18" height="10"/><rect x="60" y="152" width="18" height="10"/></g>
+    <text x="90" y="190" class="s">低 7 层 = 1</text>
+  </g>
+  <g transform="translate(400,0)">
+    <text x="60" y="20" text-anchor="middle" class="t">桌子（只有桌面和细桌腿）</text>
+    <rect x="0" y="120" width="130" height="8" fill="#e5e7eb" stroke="#94a3b8"/><rect x="0" y="128" width="6" height="102" fill="#e5e7eb"/><rect x="124" y="128" width="6" height="102" fill="#e5e7eb"/>
+    <g fill="#c2410c" opacity="0.85"><rect x="145" y="122" width="18" height="10"/></g>
+    <text x="172" y="130" class="s">只有 0.7 m 那一层 = 1</text>
+    <text x="172" y="148" class="s">→ 二维代价地图里仍是致命障碍</text>
+  </g>
+  <g transform="translate(640,0)">
+    <text x="60" y="20" text-anchor="middle" class="t">人</text>
+    <rect x="40" y="62" width="30" height="168" fill="#f1ebfe" stroke="#7c3aed"/>
+    <text x="0" y="250" class="s">标为动态 → 进动态层，不进体素层</text>
+  </g>
+</svg>
+<figcaption>图 3　每列的高度位掩码：任何一层有障碍，这个格子在代价地图里就是致命障碍</figcaption>
+</figure>
+
+<h3 id="s-v-mark">6.2 标记</h3>
+<ul>
+  <li>只有<b>静态点</b>参与标记（运动点进动态层）。</li>
+  <li>点的高度在 [0.08, 1.85) m 内、离雷达不超过 <code>obstacle_max_range</code>（局部 5 m / 全局 8 m），把对应格子的对应位置 1。</li>
+  <li>地面点（z &lt; 0.08 m）不标记，所以地面不会被当成障碍；高于 1.85 m 的天花板、灯不标记。</li>
+  <li>一列被标记的次数达到 <code>min_points_per_column</code>（1）才算占据。</li>
+</ul>
+
+<h3 id="s-v-ray">6.3 三维射线清除</h3>
+<p>每帧先清除、后标记（保证本帧的点不会被本帧的射线擦掉）。对每个回波，从雷达原点到回波点走一条<b>三维射线</b>（Amanatides–Woo 体素遍历），把沿途经过的体素位清零；终点所在体素保留。超过 <code>raytrace_max_range</code>（局部 6 m）的回波，射线截断到 6 m。</p>
+<figure>
+<svg viewBox="0 0 1000 230" role="img" aria-label="三维射线清除不误清悬空障碍">
+  <style>.t{font-size:13px;fill:#1f2329}.s{font-size:11.5px;fill:#5c6370}</style>
+  <line x1="20" y1="200" x2="980" y2="200" stroke="#94a3b8" stroke-width="2"/>
+  <circle cx="80" cy="40" r="9" fill="#2563eb"/><text x="80" y="25" text-anchor="middle" class="s">雷达（头部 ~1.2 m）</text>
+  <rect x="420" y="80" width="180" height="8" fill="#e5e7eb" stroke="#94a3b8"/><text x="510" y="73" text-anchor="middle" class="t">桌面 0.72 m</text>
+  <line x1="88" y1="44" x2="880" y2="198" stroke="#93c5fd" stroke-width="1.6"/>
+  <circle cx="880" cy="198" r="4" fill="#2563eb"/><text x="880" y="218" text-anchor="middle" class="s">桌后地面回波</text>
+  <text x="630" y="60" class="s">射线从桌面下方穿过 → 只清除它经过的低层体素</text>
+  <text x="630" y="76" class="s">桌面所在的 0.7 m 层不受影响，桌子仍在代价地图里</text>
+  <rect x="200" y="120" width="40" height="80" fill="#fdeaea" stroke="#b91c1c" stroke-dasharray="4 3"/><text x="220" y="112" text-anchor="middle" class="s" fill="#b91c1c">搬走的箱子</text>
+  <line x1="88" y1="44" x2="330" y2="198" stroke="#93c5fd" stroke-width="1.6"/><circle cx="330" cy="198" r="4" fill="#2563eb"/>
+  <text x="250" y="218" class="s">新射线穿过原箱子的体素 → 清除</text>
+</svg>
+<figcaption>图 4　三维射线只清除真正穿过的高度；二维射线会把桌面一起清掉</figcaption>
+</figure>
+
+<h3 id="s-v-see">6.4 视线穿透清除</h3>
+<p>Mid-360 是稀疏的非重复扫描，射线不一定恰好穿过某个体素。因此另加一种"按方向"的清除：</p>
+<ol class="steps">
+  <li>把本帧<b>所有</b>回波按方向分成 2° 的格子，每格记下最近回波的距离。</li>
+  <li>对 6 m 内每个已占据体素：若它所在方向有回波，且它的距离 &lt; 最近回波距离 − 0.2 m，说明视线越过了它，记一次证据；连续 2 帧有证据即清除。期间若再次被标记，证据归零。</li>
+  <li>方向上没有回波（车身遮挡、视场外、雷达视场下方）、或距雷达 0.6 m 以内的体素不积累证据，所以<b>看不见的障碍不会被清掉</b>。</li>
+</ol>
+<div class="tip"><b>没有时间衰减</b><code>decay_s = 0</code>：障碍只会因为"确实看到它后面是空的"而消失，不会因为一段时间没看到而消失。机器人走近后，矮箱子落到雷达视场下方（Mid-360 下视场边缘约 −52°），它仍然留在地图里。</div>
+
+<!-- ========================================================================================= -->
+<h2 id="s-dyn">7. 动态层</h2>
+<ul>
+  <li><b>输入</b>：<code>registered_cloud</code> 中 <code>dynamic = 1</code> 的点（M-detector）和相机人员点 <code>rt/nav/person_points</code>（可选的 <code>g1d_perception</code>）。</li>
+  <li><b>存储</b>：每个栅格记录最后一次看到动态点的时间；只记高度带内、6 m 以内的点。</li>
+  <li><b>输出</b>：最后一次观测后 <code>ttl_s</code>（0.8 s）内为致命障碍，之后自动消失。人走过后不留痕迹，但人在的时候规划会绕开他。</li>
+  <li><b>相机人员点</b>还会清除这些点周围 0.15 m 内的体素（对付被当成静态点标记进体素层的人）；超过 0.5 s 的旧数据丢弃。</li>
+</ul>
+
+<!-- ========================================================================================= -->
+<h2 id="s-scan">8. 底盘雷达层</h2>
+<p>头部雷达向下看有视场下边界和盲区，紧贴车身的矮障碍要靠底盘的单线雷达（SLAMWARE，360 束，安装高度约 0.1 m）：</p>
+<ol class="steps orange">
+  <li><b>guard 转发</b>：<code>g1d_base_guard</code> 订阅 <code>rt/slamware_ros_sdk_server_node/scan</code>，换算成 <code>base_link</code> 下的点，发布 <code>rt/nav/chassis_scan</code>（PointCloud2）。这样 C++ 侧不需要为 LaserScan 类型生成 DDS 类型支持。</li>
+  <li><b>还原成扫描</b>：<code>g1d_nav</code> 把这些点换到雷达安装位姿下，按方位角放进 720 个角度格子（每格取最近距离），得到一个伪扫描。</li>
+  <li><b>二维清除 + 标记</b>（<code>ScanLayer</code>）：每束从雷达到回波做二维射线清除（最远 5 m），终点在 4 m 内则标记为障碍。无回波（inf）的方向默认不清除（<code>inf_is_valid: false</code>）。</li>
+</ol>
+
+<!-- ========================================================================================= -->
+<h2 id="s-update">9. 每个周期的合成（<code>LayeredCostmap::update</code>）</h2>
+<p>局部代价地图每个控制周期（50 ms）执行一次，全局代价地图在重规划时执行：</p>
+<ol class="steps purple">
+  <li><b>滚动</b>：把主栅格和三个图层的原点移到"以机器人为中心"，整格平移。</li>
+  <li><b>衰减</b>：体素层按 <code>decay_s</code> 清除过期列（默认 0，不执行）。</li>
+  <li><b>清除车身轮廓</b>：机器人当前轮廓（<code>robot.footprint</code>，0.60 × 0.56 m）内的体素层、动态层、扫描层全部清零，避免把自己的残影当障碍。</li>
+  <li><b>重置主栅格</b>为空闲（0）。</li>
+  <li><b>写入</b>：体素层中任一高度位为 1 的列 → 254；动态层仍在有效期内的格子 → 254；扫描层标记的格子 → 254。</li>
+  <li><b>膨胀</b>：对所有致命格子做膨胀（第 10 节）。</li>
+</ol>
+<p>点云写入（第 4 节）和合成（本节）是分开的：点云 10 Hz 写入图层状态，合成按控制周期进行；两次点云之间的合成结果只有滚动和车身清除的变化。</p>
+
+<!-- ========================================================================================= -->
+<h2 id="s-infl">10. 膨胀层</h2>
+<p>膨胀公式与 Nav2 <code>InflationLayer</code> 完全相同。车身轮廓 0.60 × 0.56 m 决定<b>内切半径</b> 0.28 m（中心到最近边的距离），膨胀半径 0.55 m，代价衰减系数 3.0：</p>
+<div class="formula">d = 0                 → 254（致命）
+0 &lt; d ≤ 0.28 m       → 253（内切：车体中心在这里，车身必然碰到障碍）
+0.28 m &lt; d ≤ 0.55 m  → 252 · exp(−3.0 · (d − 0.28))
+d &gt; 0.55 m           → 0</div>
+<figure>
+<svg viewBox="0 0 1000 260" role="img" aria-label="膨胀代价曲线">
+  <style>.s{font-size:11.5px;fill:#5c6370}.t{font-size:13px;fill:#1f2329}</style>
+  <line x1="80" y1="220" x2="940" y2="220" stroke="#94a3b8"/><line x1="80" y1="20" x2="80" y2="220" stroke="#94a3b8"/>
+  <text x="510" y="252" text-anchor="middle" class="s">到最近障碍格的距离 d（m）</text><text x="30" y="120" class="s" transform="rotate(-90 30 120)">代价</text>
+  <g class="s" text-anchor="middle"><text x="80" y="236">0</text><text x="327" y="236">0.20</text><text x="425" y="236">0.28</text><text x="573" y="236">0.40</text><text x="757" y="236">0.55</text><text x="880" y="236">0.65</text></g>
+  <g class="s" text-anchor="end"><text x="74" y="25">254</text><text x="74" y="121">130</text><text x="74" y="224">0</text></g>
+  <line x1="80" y1="21" x2="425" y2="22" stroke="#b91c1c" stroke-width="3"/>
+  <path d="M425,21 L449,33 L511,60 L572,82 L634,101 L696,118 L757,132" fill="none" stroke="#c2410c" stroke-width="3"/>
+  <line x1="757" y1="132" x2="757" y2="220" stroke="#c2410c" stroke-width="2" stroke-dasharray="4 3"/><line x1="757" y1="220" x2="940" y2="220" stroke="#15803d" stroke-width="3"/>
+  <line x1="425" y1="20" x2="425" y2="220" stroke="#cbd5e1" stroke-dasharray="3 3"/><line x1="757" y1="20" x2="757" y2="220" stroke="#cbd5e1" stroke-dasharray="3 3"/>
+  <text x="250" y="16" text-anchor="middle" class="t" fill="#b91c1c">253（内切）</text>
+  <text x="600" y="70" class="t" fill="#c2410c">指数下降</text>
+  <text x="850" y="208" text-anchor="middle" class="t" fill="#15803d">0（空闲）</text>
+</svg>
+<figcaption>图 5　膨胀代价随距离变化（示意；数值见下表）</figcaption>
+</figure>
+<table>
+<tr><th>距离 d</th><th>0</th><th>≤ 0.28 m</th><th>0.30 m</th><th>0.35 m</th><th>0.40 m</th><th>0.45 m</th><th>0.50 m</th><th>0.55 m</th><th>&gt; 0.55 m</th></tr>
+<tr><td>代价</td><td>254</td><td>253</td><td>237</td><td>204</td><td>175</td><td>151</td><td>130</td><td>112</td><td>0</td></tr>
+</table>
+<ul>
+  <li><b>实现</b>：预先算好一个半径 11 格（0.55 m / 0.05 m）的卷积核；只从"边界"致命格出发膨胀（四周都是致命格的内部格子跳过），每个格子取所有来源中的最大代价。</li>
+  <li><b>和 MPPI 的配合</b>：MPPI 的 CostCritic 按整车轮廓检查碰撞（254 / 253 直接判为不可行），并用膨胀代价把轨迹推离障碍；NavFn 把膨胀代价作为路径代价，所以全局路径会走在通道中间。</li>
+</ul>
+
+<!-- ========================================================================================= -->
+<h2 id="s-use">11. 谁在用代价地图</h2>
+<table>
+<tr><th>使用者</th><th>用哪张</th><th>怎么用</th></tr>
+<tr><td>MPPI 局部控制</td><td>局部</td><td>每个周期采样 1000 条 2.8 s 轨迹，CostCritic 用整车轮廓查代价，碰撞轨迹淘汰，其余按代价加权</td></tr>
+<tr><td>NavFn 全局规划</td><td>全局</td><td>Dijkstra / A* 搜索最小代价路径；允许穿过未知区域；目标格代价 &gt; 128 视为不可达并外移搜索</td></tr>
+<tr><td>路径阻挡判断</td><td>局部</td><td>全局路径上出现 ≥ 253 的格子 → 立即重规划</td></tr>
+<tr><td>末段接近、原地旋转、恢复行为</td><td>局部</td><td>用轮廓代价检查直线段 / 旋转圆是否无碰撞；恢复行为 <code>clear</code> 清除 1.5 m 外的障碍</td></tr>
+<tr><td>可通行扇区</td><td>局部</td><td>−90°…+90° 每 30° 检查前方 1.5 m 是否无碰撞，随状态发给 NavGPT</td></tr>
+<tr><td>Web 调试台</td><td>局部（2 Hz）/ 全局（1 Hz）</td><td>转成 <code>OccupancyGrid</code> 发布：0 → 0、254 → 100、253 → 99、1–252 线性映射到 1–98、未知 → −1</td></tr>
+<tr><td>guard 反射层</td><td>不用代价地图</td><td>直接用 <code>obstacle_points</code>（第 4 节）和底盘雷达点做扫掠停车，作为代价地图之外的独立安全层</td></tr>
+</table>
+
+<!-- ========================================================================================= -->
+<h2 id="s-timing">12. 时序与频率</h2>
+<table>
+<tr><th>环节</th><th>频率 / 延迟</th></tr>
+<tr><td>Mid-360S 点包 / IMU</td><td>20 万点/秒；IMU 200 Hz</td></tr>
+<tr><td>帧聚合 → FAST-LIO 输出</td><td>10 Hz；单帧处理（含 M-detector）仿真中约 10–30 ms，健康阈值 150 ms</td></tr>
+<tr><td>DDS 传输 → g1d_nav 取出</td><td>主循环 20 Hz，最多等待一个周期（50 ms）</td></tr>
+<tr><td>局部代价地图合成</td><td>每个控制周期（20 Hz）</td></tr>
+<tr><td>全局代价地图合成</td><td>重规划时（1 Hz；路径被挡时提前，最快 0.2 s）</td></tr>
+<tr><td>底盘雷达 → chassis_scan</td><td>10 Hz</td></tr>
+<tr><td>代价地图发布到 Web</td><td>局部 2 Hz、全局 1 Hz</td></tr>
+<tr><td>guard 反射层</td><td>30 Hz，独立于代价地图</td></tr>
+</table>
+<p>两次 LIO 之间，状态估计用轮速里程计外推位姿（最多 0.3 s），所以代价地图每 50 ms 都以最新的机器人位置滚动、清除车身轮廓。</p>
+
+<!-- ========================================================================================= -->
+<h2 id="s-journey">13. 一个点的完整旅程</h2>
+<p>以机器人正前方 2.5 m 处一张桌子的桌沿（离地 0.74 m）上的一个回波为例：</p>
+<ol class="steps">
+  <li><b>雷达</b>：在某个点包里，时间 = 包时间戳 + 序号 × 点间隔，坐标为雷达系（倒装，z 朝下）下的毫米值。</li>
+  <li><b>帧聚合</b>：归入当前 100 ms 帧，记录时间偏移（例如 63.2 ms）；坐标换成米。</li>
+  <li><b>预处理</b>：tag 正常、距离 2.6 m（&gt; 0.6 m 盲区）、不在自身盒子内 → 保留。</li>
+  <li><b>FAST-LIO</b>：用 IMU 把它补偿到帧结束时刻（机器人这 37 ms 里前进了约 1 cm），参与配准后变换到 <code>odom_lio</code>。</li>
+  <li><b>M-detector</b>：桌子不动 → 静态点；5 cm 体素降采样后随 <code>registered_cloud</code> 发出，<code>dynamic = 0</code>。</li>
+  <li><b>g1d_nav</b>：与同时间戳的 <code>lio_odom</code> 配对，乘 <code>T_odom_lio</code> 换到 odom：z ≈ 0.74 m（离地高度）。</li>
+  <li><b>体素层</b>：先做本帧所有射线的清除；再标记：0.74 m 落在第 6 层（[0.68, 0.78)），该格子第 6 位置 1。</li>
+  <li><b>合成</b>：该列非零 → 主栅格这一格 = 254；它不在车身轮廓内，不会被清掉。</li>
+  <li><b>膨胀</b>：周围 0.28 m 内 = 253，0.28–0.55 m 按指数 252 → 112。</li>
+  <li><b>使用</b>：MPPI 中任何让车身覆盖这些格子的轨迹被淘汰；NavFn 的路径绕开桌子；Web 上显示为红色障碍及其渐变的膨胀带。</li>
+  <li><b>桌子搬走后</b>：之后的射线会穿过这个体素到达后面的地面或墙，或者它所在方向的回波都在它身后 0.2 m 以外、连续 2 帧，于是被清除。</li>
+</ol>
+
+<!-- ========================================================================================= -->
+<h2 id="s-params">14. 参数速查（<code>config/g1d_nav.yaml</code>）</h2>
+<table>
+<tr><th>参数</th><th>默认</th><th>作用</th></tr>
+<tr><td><code>lidar.frame_ms</code></td><td>100</td><td>帧长</td></tr>
+<tr><td><code>lio.blind / max_range / point_filter_num</code></td><td>0.6 m / 60 m / 1</td><td>预处理</td></tr>
+<tr><td><code>self_filter.boxes</code></td><td>2 个估计盒子</td><td>head_link 下的自身点盒子（需实测）</td></tr>
+<tr><td><code>lio.filter_size_surf / filter_size_map</code></td><td>0.3 / 0.4 m</td><td>FAST-LIO 降采样</td></tr>
+<tr><td><code>lio.publish_cloud_voxel</code></td><td>0.05 m</td><td>发布点云的降采样</td></tr>
+<tr><td><code>costmap.local.size_x / resolution</code></td><td>6 m / 0.05 m</td><td>局部地图</td></tr>
+<tr><td><code>costmap.global.size_x / resolution</code></td><td>20 m / 0.1 m</td><td>全局地图</td></tr>
+<tr><td><code>costmap.common.voxel.z_min / z_max / z_resolution</code></td><td>0.08 / 1.85 / 0.1 m</td><td>参与避障的高度带</td></tr>
+<tr><td><code>costmap.common.voxel.obstacle_max_range / raytrace_max_range</code></td><td>5 / 6 m（全局 8 / 9 m）</td><td>标记 / 清除距离</td></tr>
+<tr><td><code>costmap.common.voxel.clear_every_n</code></td><td>1（全局 2）</td><td>每 N 条射线取 1 条清除（省 CPU）</td></tr>
+<tr><td><code>costmap.common.voxel.decay_s</code></td><td>0</td><td>按时间衰减（0 = 不衰减）</td></tr>
+<tr><td><code>costmap.common.voxel.see_through_*</code> / <code>blind_radius</code></td><td>2° / 0.2 m / 2 帧 / 0.6 m</td><td>视线穿透清除</td></tr>
+<tr><td><code>costmap.common.dynamic.ttl_s</code></td><td>0.8 s</td><td>动态层保留时间</td></tr>
+<tr><td><code>costmap.common.scan.obstacle_max_range / raytrace_max_range / inf_is_valid</code></td><td>4 / 5 m / false</td><td>底盘雷达层</td></tr>
+<tr><td><code>costmap.common.inflation.radius / cost_scaling_factor</code></td><td>0.55 m / 3.0</td><td>膨胀</td></tr>
+<tr><td><code>robot.footprint</code></td><td>±0.30 × ±0.28 m</td><td>车身轮廓（决定内切半径和车身清除区）</td></tr>
+<tr><td><code>guard.obstacle_points_range / voxel</code></td><td>3 m / 0.05 m</td><td>发给 guard 的障碍点</td></tr>
+</table>
+
+<!-- ========================================================================================= -->
+<h2 id="s-code">15. 代码位置</h2>
+<table>
+<tr><th>环节</th><th>路径</th></tr>
+<tr><td>帧聚合</td><td><code>src/lio/src/livox_frame.cpp</code>（<code>FrameAggregator</code>）</td></tr>
+<tr><td>预处理、自身点过滤</td><td><code>src/lio/src/preprocess.cpp</code></td></tr>
+<tr><td>FAST-LIO2（去畸变、IESKF、ikd-Tree、动态标注钩子）</td><td><code>third_party/fast_lio/src/laserMapping.cpp</code>、<code>include/fast_lio_api.h</code></td></tr>
+<tr><td>LIO 封装、输出降采样、健康、时钟</td><td><code>src/lio/src/lio_estimator.cpp</code>、<code>lio_health.cpp</code></td></tr>
+<tr><td>DDS 发布 / 接收、时间戳配对、伪扫描</td><td><code>src/apps/g1d_lio_main.cpp</code>、<code>g1d_nav_main.cpp</code>、<code>dds_util.hpp</code></td></tr>
+<tr><td>位姿链与 <code>T_odom_lio</code></td><td><code>src/nav/src/state_estimator.cpp</code>、<code>body_kinematics.cpp</code></td></tr>
+<tr><td>点云写入代价地图、障碍点</td><td><code>src/nav/src/nav_core.cpp</code>（<code>onLio</code>、<code>onScan</code>、<code>onDynamicPoints</code>）</td></tr>
+<tr><td>体素层、动态层、扫描层、膨胀层</td><td><code>src/nav/src/costmap/layers.cpp</code></td></tr>
+<tr><td>图层合成、滚动、车身清除</td><td><code>src/nav/src/costmap/layered_costmap.cpp</code></td></tr>
+<tr><td>Nav2 Costmap2D / 代价值定义</td><td><code>third_party/nav2/nav2_costmap_2d/</code></td></tr>
+<tr><td>底盘扫描转发</td><td><code>python/g1d_nav_py/guard_node.py</code>（<code>scan_to_points</code>）</td></tr>
+<tr><td>测试</td><td><code>tests/test_nav_units.cpp</code>（体素 / 射线 / 悬空 / 膨胀 / 穿透 / 动态层）、<code>test_nav_sim.cpp</code>、<code>test_dynamic_sim.cpp</code></td></tr>
+</table>
+</main>
+</body>
+</html>
