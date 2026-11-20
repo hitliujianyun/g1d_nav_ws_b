@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>g1d_ws 动态物体滤除：选型历程与最终实现</title>
+<style>
+  :root {
+    --bg: #f7f8fa; --fg: #1f2329; --muted: #5c6370; --line: #dfe3ea; --card: #ffffff;
+    --accent: #2563eb; --accent-soft: #e8f0fe; --green: #15803d; --green-soft: #e7f6ec;
+    --orange: #c2410c; --orange-soft: #fff1e6; --red: #b91c1c; --red-soft: #fdeaea;
+    --purple: #7c3aed; --purple-soft: #f1ebfe; --code-bg: #f1f3f6;
+    --mono: "JetBrains Mono", "Cascadia Code", Consolas, "Courier New", monospace;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; font: 15px/1.75 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+         color: var(--fg); background: var(--bg); }
+  nav#toc { position: fixed; top: 0; left: 0; bottom: 0; width: 280px; overflow-y: auto; padding: 22px 16px 40px;
+            background: #111827; color: #cbd5e1; font-size: 13.5px; }
+  nav#toc h2 { color: #fff; font-size: 16px; margin: 0 0 4px; }
+  nav#toc .sub { color: #94a3b8; font-size: 12px; margin-bottom: 16px; }
+  nav#toc a { color: #cbd5e1; text-decoration: none; display: block; padding: 3px 8px; border-radius: 4px; }
+  nav#toc a:hover { background: #1f2937; color: #fff; }
+  nav#toc ol { list-style: none; padding: 0; margin: 0; counter-reset: s; }
+  nav#toc ol > li > a::before { counter-increment: s; content: counter(s) ". "; color: #64748b; }
+  nav#toc ol ol { padding-left: 16px; counter-reset: none; }
+  nav#toc ol ol a { font-size: 12.5px; color: #9aa5b6; }
+  nav#toc ol ol a::before { content: none !important; }
+  main { margin-left: 280px; padding: 36px 56px 120px; max-width: 1180px; }
+  h1 { font-size: 30px; margin: 0 0 6px; }
+  h2 { font-size: 23px; margin: 56px 0 14px; padding-bottom: 8px; border-bottom: 2px solid var(--line); }
+  h3 { font-size: 18px; margin: 32px 0 10px; color: #111827; }
+  h4 { font-size: 15.5px; margin: 22px 0 8px; color: #374151; }
+  p { margin: 8px 0 12px; }
+  a { color: var(--accent); }
+  code { font-family: var(--mono); font-size: 13px; background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+  pre { font-family: var(--mono); font-size: 12.8px; line-height: 1.6; background: #0f172a; color: #e2e8f0;
+        padding: 14px 16px; border-radius: 8px; overflow-x: auto; }
+  pre code { background: none; padding: 0; color: inherit; font-size: inherit; }
+  pre .c { color: #7c8ba1; } pre .k { color: #93c5fd; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0 18px; background: var(--card); font-size: 14px; }
+  th, td { border: 1px solid var(--line); padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: #f1f4f9; font-weight: 600; white-space: nowrap; }
+  td code { white-space: nowrap; }
+  .lead { font-size: 16.5px; color: #374151; }
+  .meta { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px 20px; margin: 14px 0; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .stat { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .stat b { display: block; font-size: 22px; margin-bottom: 2px; color: var(--accent); }
+  .stat span { color: var(--muted); font-size: 13px; }
+  .note, .warn, .tip, .key { border-left: 4px solid; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 14.3px; }
+  .note { background: var(--accent-soft); border-color: var(--accent); }
+  .warn { background: var(--orange-soft); border-color: var(--orange); }
+  .tip  { background: var(--green-soft); border-color: var(--green); }
+  .key  { background: var(--purple-soft); border-color: var(--purple); }
+  .note > b:first-child, .warn > b:first-child, .tip > b:first-child, .key > b:first-child { margin-right: 8px; }
+  .tag { display: inline-block; font-size: 12px; padding: 0 7px; border-radius: 10px; margin-right: 4px; font-weight: 600; }
+  .t-yes { background: var(--green-soft); color: var(--green); }
+  .t-no { background: var(--red-soft); color: var(--red); }
+  .t-opt { background: var(--accent-soft); color: var(--accent); }
+  .t-later { background: var(--purple-soft); color: var(--purple); }
+  .steps { counter-reset: st; list-style: none; padding: 0; margin: 12px 0; }
+  .steps > li { position: relative; padding: 10px 14px 10px 52px; margin: 8px 0; background: var(--card);
+                border: 1px solid var(--line); border-radius: 8px; }
+  .steps > li::before { counter-increment: st; content: counter(st); position: absolute; left: 12px; top: 10px;
+                        width: 28px; height: 28px; border-radius: 50%; background: var(--accent); color: #fff;
+                        font-weight: 700; text-align: center; line-height: 28px; font-size: 13px; }
+  .steps.green > li::before { background: var(--green); }
+  .steps.orange > li::before { background: var(--orange); }
+  .steps.purple > li::before { background: var(--purple); }
+  .timeline { position: relative; margin: 18px 0; padding-left: 26px; border-left: 3px solid var(--line); }
+  .timeline .ev { position: relative; margin: 0 0 18px; background: var(--card); border: 1px solid var(--line);
+                  border-radius: 8px; padding: 10px 14px; }
+  .timeline .ev::before { content: ""; position: absolute; left: -36px; top: 14px; width: 15px; height: 15px;
+                          border-radius: 50%; background: var(--accent); border: 3px solid var(--bg); }
+  .timeline .ev.final::before { background: var(--green); }
+  .timeline .ev h4 { margin: 0 0 4px; }
+  .timeline .ev .when { color: var(--muted); font-size: 12.5px; }
+  figure { margin: 18px 0; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+  figure svg { width: 100%; height: auto; display: block; }
+  figcaption { color: var(--muted); font-size: 13px; text-align: center; margin-top: 6px; }
+  svg text { font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+  .small { font-size: 13px; color: var(--muted); }
+  details { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px; margin: 10px 0; }
+  details summary { cursor: pointer; font-weight: 600; }
+  ol.refs { font-size: 13px; color: #374151; padding-left: 26px; }
+  ol.refs li { margin: 3px 0; word-break: break-all; }
+  @media (max-width: 1100px) { nav#toc { display: none; } main { margin-left: 0; padding: 24px; }
+    .grid2, .grid3, .grid4 { grid-template-columns: 1fr; } }
+  @media print { nav#toc { display: none; } main { margin: 0; max-width: none; } h2 { page-break-before: always; } }
+</style>
+</head>
+<body>
+
+<nav id="toc">
+  <h2>动态物体滤除</h2>
+  <div class="sub">选型历程 · 最终方案 · 实现细节 · 验证</div>
+  <ol>
+    <li><a href="#s-summary">结论速览</a></li>
+    <li><a href="#s-problem">问题从哪里来</a></li>
+    <li><a href="#s-history">选型历程</a>
+      <ol><li><a href="#s-h-timeline">四轮决策时间线</a></li><li><a href="#s-h-geo">几何方法调研</a></li>
+      <li><a href="#s-h-lio">FAST-LIO 现成改版</a></li><li><a href="#s-h-learn">学习方法</a></li>
+      <li><a href="#s-h-hw">5090 / Thor 下的重新选型</a></li><li><a href="#s-h-sam">SAM 系列与远端推理</a></li>
+      <li><a href="#s-h-final">最终决策</a></li></ol></li>
+    <li><a href="#s-arch">最终架构</a></li>
+    <li><a href="#s-mdet">第一道：M-detector 逐点标注</a></li>
+    <li><a href="#s-ikd">第二道：FAST-LIO 地图插入把关</a></li>
+    <li><a href="#s-costmap">第三道：代价地图</a>
+      <ol><li><a href="#s-cm-voxel">体素层与视线穿透清除</a></li><li><a href="#s-cm-dyn">动态层</a></li>
+      <li><a href="#s-cm-guard">与 guard 的关系</a></li></ol></li>
+    <li><a href="#s-dufo">第四道：导出地图 DUFOMap 清理</a></li>
+    <li><a href="#s-cam">第五道（可选）：相机识别静止的人</a></li>
+    <li><a href="#s-offline">5090 离线链路</a></li>
+    <li><a href="#s-results">验证结果</a></li>
+    <li><a href="#s-debug">开发中解决的关键问题</a></li>
+    <li><a href="#s-diff">实现与原方案的差异</a></li>
+    <li><a href="#s-params">参数速查</a></li>
+    <li><a href="#s-limits">局限与上机待办</a></li>
+    <li><a href="#s-code">代码位置</a></li>
+    <li><a href="#s-refs">参考资料</a></li>
+  </ol>
+</nav>
+
+<main>
+<h1>动态物体滤除：选型历程与最终实现</h1>
+<div class="meta">g1d_ws · 宇树 G1-D · 头部倒装 Livox Mid-360S · FAST-LIO2 · Nav2 代价地图 · 2026-11 · 对应文档 <code>docs/DYNAMIC_OBJECTS_STUDY.md</code></div>
+
+<!-- ========================================================================================= -->
+<h2 id="s-summary">1. 结论速览</h2>
+<p class="lead">动态物体滤除最终由<b>四道互补的机制</b>完成，外加一道可选的相机增强。它们共同保证两件事：<b>点云地图不留行人"拖影"</b>，<b>导航代价地图不被已经离开的人干扰</b>。</p>
+
+<table>
+<tr><th>#</th><th>机制</th><th>解决什么</th><th>运行位置</th></tr>
+<tr><td>1</td><td><b>M-detector 逐点运动标注</b></td><td>每帧里哪些点属于运动物体</td><td><code>g1d_lio</code>（CPU）</td></tr>
+<tr><td>2</td><td><b>FAST-LIO 地图插入把关</b>：动态邻域排除、延迟 3 帧、按盒回溯删除</td><td>行人不进 ikd-Tree 地图</td><td><code>g1d_lio</code></td></tr>
+<tr><td>3</td><td><b>代价地图</b>：视线穿透清除 + 盲区保护 + 0.8 s 动态层</td><td>人走过后 1 s 内恢复空闲，看不见的障碍不被误清</td><td><code>g1d_nav</code></td></tr>
+<tr><td>4</td><td><b>导出地图 DUFOMap 清理</b></td><td>清掉漏网的残留（尤其检测器启动前的几秒）</td><td><code>g1d_web</code>（子进程）</td></tr>
+<tr><td>5</td><td><b>相机人员分割</b>（可选）</td><td>站着不动的人（几何方法看不出）</td><td><code>g1d_perception</code>（GPU）</td></tr>
+</table>
+
+<div class="grid4">
+  <div class="stat"><b>≤ 0.85 s</b><span>行人走过后代价地图拖影消失（要求 ≤ 1 s）</span></div>
+  <div class="stat"><b>0.74 / 0.90</b><span>M-detector 召回：完整 LIO 闭环 / 真值位姿；静态误检 ≈ 0</span></div>
+  <div class="stat"><b>−67 ~ −83 %</b><span>FAST-LIO 地图中行人走廊的残留点</span></div>
+  <div class="stat"><b>95 %</b><span>DUFOMap 导出清理移除拖影，墙体保留 ≥ 99.5 %</span></div>
+</div>
+<p class="small">以上为仿真结果（C++ 闭环仿真 + 合成数据）。真机验收（Orin NX 耗时、真人场景、相机标定与模型训练）尚未进行，见第 15 节。</p>
+
+<div class="key"><b>核心原则</b>任何来源判为动态的点，都<b>不进地图、不进静态代价层</b>，只进一个会自动过期的动态层；guard 反射层仍使用当前帧全部障碍点。漏检只会让残影多留一会儿，误检只会少记一个静态点，<b>都不会让机器人撞上东西</b>。</div>
+
+<!-- ========================================================================================= -->
+<h2 id="s-problem">2. 问题从哪里来</h2>
+<p>改造前，系统对动态物体没有任何专门处理。各环节的情况如下：</p>
+<table>
+<tr><th>位置</th><th>改造前的做法</th><th>动态物体的影响</th></tr>
+<tr><td>FAST-LIO2 ikd-Tree</td><td>每帧配准后，降采样点全部加入地图</td><td>行人轨迹一直留在地图里（直到移出约 60 m 范围）；人多时可能拉偏后续配准</td></tr>
+<tr><td><code>g1d_nav</code> 体素层</td><td>当前帧先沿射线清除、再标记；没有时间衰减</td><td>只有射线恰好穿过才清除；没有回波的方向、盲区、视场外的拖影会残留</td></tr>
+<tr><td>Web 累积地图 / 导出</td><td>体素只增不删</td><td>拖影全部进入导出的 <code>map.pcd</code> 和 <code>grid.png</code></td></tr>
+<tr><td>guard 反射层</td><td>只用当前帧</td><td>不受影响</td></tr>
+</table>
+<div class="note"><b>两个问题要分开解决</b><b>地图</b>要求"动态点永不入库"，宁可多删，因为静态结构之后会被补回来；<b>代价地图</b>要求"刚看到的要避开、离开的要尽快忘掉，但盲区里的不能忘"。</div>
+
+<!-- ========================================================================================= -->
+<h2 id="s-history">3. 选型历程</h2>
+
+<h3 id="s-h-timeline">3.1 四轮决策时间线</h3>
+<div class="timeline">
+  <div class="ev"><div class="when">第一轮 · 按 Orin NX 算力调研</div><h4>几何方法为主，相机分割为可选增强</h4>
+    调研了 M-detector、DUFOMap、Dynablox、ERASOR、STVL 等几何方法，FAST-LIO 现成改版，以及 4DMOS / MapMOS 等学习方法。结论：在线检测用 M-detector，地图清理用 DUFOMap；激光雷达学习模型不划算。</div>
+  <div class="ev"><div class="when">第二轮 · 开发环境换成 RTX 5090 主机 + Jetson Thor</div><h4>算力不再是瓶颈，但结论变成"几何做底座，学习补短板"</h4>
+    学习模型补两个几何方法的固有短板：<b>静止的人</b>（语义分割）和<b>速度预测</b>（场景流）。5090 让"几何方法当老师、学习模型当学生"成为可能。</div>
+  <div class="ev"><div class="when">第三轮 · 评估"5090 推理 + Wi-Fi 下发给 PC2"与 SAM3D</div><h4>SAM 3D 不适合；SAM 3 只做辅助语义和教师标注</h4>
+    "SAM3D"三种指代都不做运动判断；Wi-Fi 结果会晚到、偶尔不到，<b>不能进避障回路</b>。更好的用法是 SAM 3 在 5090 上标注，蒸馏小模型在 PC2 本地跑。</div>
+  <div class="ev final"><div class="when">第四轮 · 最终方案（决策记录）</div><h4>安全实时的一切都在本地几何完成；5090 负责离线与训练</h4>
+    分 P1–P4 四期：P1 代价地图、P2 M-detector + 地图清理、P3 相机识别静止的人、P4 场景流预测（换 Thor 后）。本次实现了 P1–P3，P4 只做了训练数据导出。</div>
+</div>
+
+<h3 id="s-h-geo">3.2 几何方法调研</h3>
+<table>
+<tr><th>方法</th><th>原理</th><th>性能（论文数据）</th><th>依赖 / 许可证</th><th>结论</th></tr>
+<tr><td><b>M-detector</b>（港大 MARS，Nature Comms 2024）</td><td>遮挡原理：当前点与历史深度图的遮挡关系不一致 → 运动点；逐点判断</td><td>每点 2–4 μs；Livox AVIA 室内每帧 16.1 ms（i7-10700）[1]</td><td>ROS1、PCL、TBB；GPL-2.0（与 FAST-LIO 相同）[2]</td><td><span class="tag t-yes">采用</span>在线逐点检测。官方即配合 FAST-LIO + Livox，默认视场参数就是 Mid-360</td></tr>
+<tr><td><b>DUFOMap</b>（KTH，RA-L 2024）</td><td>射线投射标记"曾被观测为空"的 void 体素，落入 void 的点即动态</td><td>每帧 0.019 s（16 线）/ 0.062 s（64 线）[4]</td><td>BSD-3；<code>pip install dufomap</code> [5]</td><td><span class="tag t-yes">采用</span>地图清理。基准中离线精度领先，参数不用按场景调</td></tr>
+<tr><td>Dynablox（ETH，RA-L 2023）</td><td>TSDF + 高置信空闲空间</td><td>17 FPS（笔记本 CPU）[6]</td><td>voxblox、ROS1</td><td><span class="tag t-no">不选</span>稀疏雷达上动态召回低</td></tr>
+<tr><td>BeautyMap / ERASOR / Removert</td><td>与先验地图比较</td><td>离线</td><td>需先有完整地图</td><td><span class="tag t-no">不选</span>只适合建完图后清理</td></tr>
+<tr><td>OctoMap 射线清除</td><td>占据概率 + 射线</td><td>每帧 1–3 s [4][8]</td><td>—</td><td><span class="tag t-no">不选</span>慢、静态精度低</td></tr>
+<tr><td>STVL（Nav2 时空体素层）</td><td>体素按时间衰减，视场锥内未再看到的加速衰减</td><td>—</td><td>Nav2 插件 [9]</td><td><span class="tag t-opt">借鉴思路</span>但视场锥内被车身遮挡的区域必须排除 [10]</td></tr>
+</table>
+<p>KTH 动态地图基准的关键数据（SA = 静态点保留率，DA = 动态点剔除率）[7]：</p>
+<table>
+<tr><th>方法</th><th>KITTI 00 SA / DA</th><th>半室内（16 线，两人走动）SA / DA</th></tr>
+<tr><td><b>DUFOMap</b></td><td>97.96 / 98.72</td><td>99.64 / 83.00</td></tr>
+<tr><td>Dynablox</td><td>96.76 / 90.68</td><td>98.81 / 36.49</td></tr>
+<tr><td>ERASOR</td><td>66.70 / 98.54</td><td>94.90 / 66.26</td></tr>
+<tr><td>Removert</td><td>99.44 / 41.53</td><td>99.96 / 12.15</td></tr>
+<tr><td>OctoMap</td><td>68.05 / 99.69</td><td>88.97 / 82.18</td></tr>
+</table>
+
+<h3 id="s-h-lio">3.3 FAST-LIO 现成改版</h3>
+<table>
+<tr><th>项目</th><th>做法</th><th>评价</th></tr>
+<tr><td>better_fastlio2</td><td>FAST-LIO2 + 曲面体素占据描述子 + 可选 YOLO，后端 GTSAM [11]</td><td>依赖重（GTSAM、ROS1），动态模块在线化时牺牲了精度</td></tr>
+<tr><td>FAST-LIO-WithoutDynObj</td><td>基于光路原理剔除动态点，Mid-360 隧道测试 [12]</td><td>作者自述误识别率较高、只对近距离有效</td></tr>
+<tr><td>Dynamic-LIO（IROS 2025）</td><td>地面 / 非地面标签一致性 [13]</td><td>前端不是 FAST-LIO2，针对驾驶场景</td></tr>
+<tr><td>RF-LIO</td><td>先剔除再配准，基于 LIO-SAM [14]</td><td>架构不同，不便移植</td></tr>
+</table>
+<div class="tip"><b>结论</b>没有可直接替换又足够成熟的版本。更稳妥的做法是在现有 FAST-LIO2 外接独立的检测模块，<b>只改"哪些点入库"这一处</b>，不动 IESKF。</div>
+
+<h3 id="s-h-learn">3.4 学习方法</h3>
+<table>
+<tr><th>方法</th><th>情况</th><th>结论</th></tr>
+<tr><td>4DMOS / MapMOS</td><td>依赖 MinkowskiEngine 稀疏卷积；16 线半室内数据上 DA 只有 10.6 % / 4.75 % [7]</td><td><span class="tag t-no">不选</span>部署难，稀疏雷达泛化差</td></tr>
+<tr><td>LiMoSeg</td><td>Jetson Xavier 上 8 ms [17]</td><td><span class="tag t-no">不选</span>需针对 Mid-360S 室内重新训练</td></tr>
+<tr><td><b>相机分割 + 投影到点云</b></td><td>YOLO-seg 掩码，激光点投影进掩码即判为动态；需几何校验 [18][20]</td><td><span class="tag t-opt">可选增强</span>唯一能识别<b>静止的人</b>的方式</td></tr>
+<tr><td>NVIDIA nvblox</td><td>动态模式基于 Dynablox；Isaac ROS 需 ROS 2 + JetPack 6 [21][24]</td><td><span class="tag t-later">留给 ROS 2 版</span></td></tr>
+</table>
+
+<h3 id="s-h-hw">3.5 5090 / Thor 下的重新选型</h3>
+<p>换成 RTX 5090 主机（Blackwell sm_120）和 Jetson Thor（sm_110，JetPack 7）后，算力不再是瓶颈，但<b>结论不是"用学习模型替换几何方法"</b>，原因有三：</p>
+<ol class="steps">
+  <li>几何方法不需要训练数据，直接适用于 Mid-360S + 倒装 + 室内；现成的激光雷达学习模型都在车载多线雷达上训练，在稀疏 / 非车载雷达上泛化很差 [7]。</li>
+  <li>几何方法有两个固有短板正好由学习模型补：<b>静止的人</b>（语义模型按类别识别）和<b>速度预测</b>（场景流给每点速度，可做 1–2 s 占据预测）。</li>
+  <li>5090 让"几何当老师、学习当学生"可行：SeFlow 就是用 DUFOMap 的动态标签作伪标签，自监督训练场景流网络 [35]。</li>
+</ol>
+<p>由此形成的分层组合：</p>
+<table>
+<tr><th>层</th><th>选型</th><th>位置</th><th>作用</th></tr>
+<tr><td>A 在线运动检测（主干）</td><td><b>M-detector</b></td><td>机载 CPU</td><td>逐点动态标签</td></tr>
+<tr><td>B 场景流（增强）</td><td>DeltaFlow / Flow4D（OpenSceneFlow），DUFOMap 伪标签微调 [36]</td><td>5090 训练，Thor 推理</td><td>每点速度 → 预测层</td></tr>
+<tr><td>C 语义：人（含静止）</td><td><b>YOLO11-seg / YOLO26-seg</b> → TensorRT，掩码投影到雷达点</td><td>机载 GPU</td><td>识别静止的人</td></tr>
+<tr><td>D 360° 激光语义（研究项）</td><td>Sonata / PTv3 [41]</td><td>5090 / Thor</td><td>相机视场外的人</td></tr>
+<tr><td>E 离线地图清理</td><td><b>DUFOMap</b></td><td>5090 / PC2</td><td>导出地图去拖影</td></tr>
+<tr><td>F 代价地图</td><td>静态体素层 + 动态层 + 预测层</td><td>机载 CPU</td><td>离开的忘掉、迎面的提前避</td></tr>
+</table>
+<div class="warn"><b>工具链风险</b>稀疏卷积库对 Blackwell 支持不完善：官方 MinkowskiEngine 不支持 sm_120 [26]，spconv 需源码编译 [30]；Isaac ROS 4.0 的 nvblox 动态 / 人体分割模式不支持激光雷达输入 [34]。这也是 4DMOS / MapMOS 继续不被推荐的原因。</div>
+
+<h3 id="s-h-sam">3.6 SAM 系列与"5090 远端推理 + Wi-Fi 下发"评估</h3>
+<table>
+<tr><th>模型</th><th>实际功能</th><th>速度</th><th>能否用于动态物体滤除</th></tr>
+<tr><td>Meta SAM 3D Objects / Body</td><td>从<b>单张图像</b>重建三维物体 / 人体网格</td><td>Objects 每物体 10–20 s（A100）[42]</td><td><span class="tag t-no">不适合</span>不判断运动，单目尺度无法与点云精确对齐</td></tr>
+<tr><td>Pointcept SAM3D（2023）</td><td>SAM 2D 掩码经深度投影到点云并逐帧合并</td><td>每帧约 2.9 s [45]</td><td><span class="tag t-no">不适合</span>离线、需 RGB-D、无类别语义</td></tr>
+<tr><td><b>Meta SAM 3 / 3.1</b></td><td>文本提示概念分割与视频跟踪（如 "person"）</td><td>H200 单图 30 ms [46]</td><td><span class="tag t-opt">辅助语义 / 教师</span></td></tr>
+</table>
+<p>无线远端推理的约束：Wi-Fi 延迟有长尾，网络过载时可达 500 ms 且会丢消息 [49]，远端结果<b>一定会晚到、偶尔不到</b>。由此得出三条原则：</p>
+<ol class="steps orange">
+  <li>远端结果<b>不能进避障安全回路</b>；guard、M-detector、体素层全部本地运行，断网照常工作。</li>
+  <li>远端语义只用于对时延不敏感的环节：判定哪些点不入库（已入库的用 ikd-Tree 区域删除回溯清除）、生成训练伪标签。</li>
+  <li>更推荐"<b>大模型在 5090 当老师，小模型在 PC2 本地跑</b>"：SAM 3 给自录数据标注，蒸馏 YOLO-seg 部署到 PC2 自己的 GPU，彻底去掉无线依赖。</li>
+</ol>
+
+<h3 id="s-h-final">3.7 最终决策</h3>
+<div class="key"><b>原则</b>安全和实时相关的一切都在机器人 PC2 本地运行，且只依赖几何方法；5090 主机负责离线处理、大模型标注和训练；学习模型只补几何方法的短板（静止的人、速度预测），<b>永远不是唯一依据</b>。</div>
+<table>
+<tr><th>运行位置</th><th>内容</th></tr>
+<tr><td><b>PC2（Orin NX，机载，必需）</b></td><td>FAST-LIO2 + M-detector；代价地图：静态体素层（射线清除 + 视线证据清除 + 盲区 / 遮挡保护）+ 动态层 + 底盘雷达层；guard 不变；P3 起加本地 YOLO-seg</td></tr>
+<tr><td><b>5090 主机（离线）</b></td><td>DUFOMap 清理导出地图；SAM 3 生成"人"掩码蒸馏小模型；DUFOMap 伪标签训练场景流</td></tr>
+<tr><td><b>Thor（将来替换 PC2）</b></td><td>场景流上机，代价地图增加预测层</td></tr>
+</table>
+<p><b>明确不采用</b>：SAM 3D（不做运动判断）、Pointcept SAM3D（离线、秒级）、4DMOS / MapMOS（部署难、泛化差）、当前版本 nvblox 动态模式（不支持激光雷达）、任何依赖 Wi-Fi 的在线推理进入避障回路。</p>
+<table>
+<tr><th>阶段</th><th>内容</th><th>验收指标</th><th>状态</th></tr>
+<tr><td>P1 代价地图</td><td>视线证据清除、盲区保护、动态层；仿真行人场景</td><td>人离开 ≤ 1 s 清空；盲区障碍保持 ≥ 30 s；无碰撞</td><td><span class="tag t-yes">已实现</span>仿真达标</td></tr>
+<tr><td>P2 M-detector + 地图清理</td><td>M-detector 接入 <code>g1d_lio</code>，动态点不入库；导出接入 DUFOMap；开始录数据</td><td>DA ≥ 90 %、SA ≥ 95 %；Orin NX &lt; 20 ms/帧；T3 恶化 ≤ 20 %</td><td><span class="tag t-yes">已实现</span>仿真数据见第 11 节，Orin 待测</td></tr>
+<tr><td>P3 静止的人</td><td>SAM 3 标注 → 蒸馏 YOLO-seg → PC2 TensorRT；相机-雷达投影</td><td>3 m 内召回 ≥ 95 %；&lt; 30 ms/帧</td><td><span class="tag t-yes">代码已实现</span>模型待训练</td></tr>
+<tr><td>P4 预测</td><td>场景流训练与上机、预测层</td><td>迎面行人提前避让</td><td><span class="tag t-later">换 Thor 后</span>已有训练数据导出</td></tr>
+</table>
+
+<!-- ========================================================================================= -->
+<h2 id="s-arch">4. 最终架构</h2>
+<figure>
+<svg viewBox="0 0 1000 470" role="img" aria-label="动态物体滤除数据流">
+  <defs><marker id="ar" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#64748b"/></marker></defs>
+  <style>.bx{fill:#fff;stroke:#94a3b8;stroke-width:1.4}.lio{fill:#e8f0fe;stroke:#2563eb}.nav{fill:#e7f6ec;stroke:#15803d}.web{fill:#fff1e6;stroke:#c2410c}.cam{fill:#f1ebfe;stroke:#7c3aed}.t{font-size:13px;fill:#1f2329}.s{font-size:11.5px;fill:#5c6370}.ln{stroke:#64748b;stroke-width:1.5;fill:none;marker-end:url(#ar)}.dash{stroke-dasharray:5 4}</style>
+  <rect x="10" y="40" width="300" height="250" rx="10" fill="none" stroke="#2563eb" stroke-dasharray="4 4"/>
+  <text x="20" y="32" class="s" fill="#2563eb">g1d_lio（C++）</text>
+  <rect x="25" y="60" width="120" height="50" rx="8" class="bx"/><text x="85" y="82" text-anchor="middle" class="t">Mid-360S</text><text x="85" y="99" text-anchor="middle" class="s">10 Hz 扫描</text>
+  <rect x="175" y="60" width="120" height="50" rx="8" class="bx lio"/><text x="235" y="82" text-anchor="middle" class="t">FAST-LIO2</text><text x="235" y="99" text-anchor="middle" class="s">EKF 位姿更新</text>
+  <rect x="25" y="140" width="270" height="56" rx="8" class="bx lio"/><text x="160" y="164" text-anchor="middle" class="t">① M-detector 逐点动态标签</text><text x="160" y="183" text-anchor="middle" class="s">三类遮挡判据 + 体素投票 / 膨胀</text>
+  <rect x="25" y="220" width="270" height="56" rx="8" class="bx lio"/><text x="160" y="244" text-anchor="middle" class="t">② ikd-Tree 插入把关</text><text x="160" y="263" text-anchor="middle" class="s">动态邻域排除 · 延迟 3 帧 · 按盒删除</text>
+  <path d="M145,85 L172,85" class="ln"/><path d="M235,110 L235,137" class="ln"/><path d="M160,196 L160,217" class="ln"/>
+
+  <rect x="360" y="140" width="190" height="56" rx="8" class="bx"/><text x="455" y="162" text-anchor="middle" class="t">registered_cloud</text><text x="455" y="181" text-anchor="middle" class="s">x y z + dynamic 字段</text>
+  <path d="M295,168 L357,168" class="ln"/>
+
+  <rect x="600" y="40" width="380" height="170" rx="10" fill="none" stroke="#15803d" stroke-dasharray="4 4"/>
+  <text x="610" y="32" class="s" fill="#15803d">g1d_nav（C++）</text>
+  <rect x="615" y="55" width="350" height="44" rx="8" class="bx nav"/><text x="790" y="74" text-anchor="middle" class="t">③ 静态体素层：只用静态点标记</text><text x="790" y="91" text-anchor="middle" class="s">射线清除 + 视线穿透清除 · 盲区 / 遮挡方向保护</text>
+  <rect x="615" y="108" width="350" height="44" rx="8" class="bx nav"/><text x="790" y="127" text-anchor="middle" class="t">③ 动态层：TTL 0.8 s</text><text x="790" y="144" text-anchor="middle" class="s">动态点 + 相机人员点</text>
+  <rect x="615" y="160" width="350" height="40" rx="8" class="bx"/><text x="790" y="185" text-anchor="middle" class="t">MPPI / NavFn → guard（用全部障碍点）</text>
+  <path d="M550,160 L612,85" class="ln"/><path d="M550,168 L612,130" class="ln"/>
+
+  <rect x="600" y="240" width="380" height="110" rx="10" fill="none" stroke="#c2410c" stroke-dasharray="4 4"/>
+  <text x="610" y="234" class="s" fill="#c2410c">g1d_web（Python）</text>
+  <rect x="615" y="252" width="170" height="86" rx="8" class="bx web"/><text x="700" y="276" text-anchor="middle" class="t">累积地图</text><text x="700" y="294" text-anchor="middle" class="s">只收静态点</text><text x="700" y="312" text-anchor="middle" class="s">+ 关键帧录制</text>
+  <rect x="800" y="252" width="165" height="86" rx="8" class="bx web"/><text x="882" y="276" text-anchor="middle" class="t">④ 导出清理</text><text x="882" y="294" text-anchor="middle" class="s">DUFOMap（子进程）</text><text x="882" y="312" text-anchor="middle" class="s">map.pcd / grid.png</text>
+  <path d="M550,180 L612,290" class="ln"/><path d="M785,295 L797,295" class="ln"/>
+
+  <rect x="10" y="370" width="540" height="90" rx="10" fill="none" stroke="#7c3aed" stroke-dasharray="4 4"/>
+  <text x="20" y="364" class="s" fill="#7c3aed">g1d_perception（可选，Python + TensorRT）</text>
+  <rect x="25" y="385" width="140" height="62" rx="8" class="bx cam"/><text x="95" y="410" text-anchor="middle" class="t">头部相机</text><text x="95" y="428" text-anchor="middle" class="s">teleimager ZMQ</text>
+  <rect x="195" y="385" width="160" height="62" rx="8" class="bx cam"/><text x="275" y="410" text-anchor="middle" class="t">⑤ YOLO-seg</text><text x="275" y="428" text-anchor="middle" class="s">人员实例掩码</text>
+  <rect x="385" y="385" width="150" height="62" rx="8" class="bx cam"/><text x="460" y="410" text-anchor="middle" class="t">掩码 → 雷达点</text><text x="460" y="428" text-anchor="middle" class="s">深度门限 · 确认 2 帧</text>
+  <path d="M165,416 L192,416" class="ln"/><path d="M355,416 L382,416" class="ln"/>
+  <path d="M535,405 C590,360 590,160 612,130" class="ln dash"/><text x="582" y="372" class="s" fill="#7c3aed">person_points</text>
+  <path d="M400,385 C340,330 320,300 295,262" class="ln dash"/><text x="318" y="330" class="s" fill="#7c3aed">map_delete</text>
+  <path d="M455,196 L455,382" class="ln dash"/><text x="462" y="300" class="s">扫描点（投影用）</text>
+</svg>
+<figcaption>图 1　数据流：编号对应第 5–9 节的五道机制；虚线为可选的相机支路</figcaption>
+</figure>
+
+<table>
+<tr><th>进程</th><th>新增职责</th><th>新增 / 变化的话题</th></tr>
+<tr><td><code>g1d_lio</code></td><td>M-detector 标注；地图插入把关；按盒删除地图点</td><td><code>registered_cloud</code> 加 <code>dynamic</code> 字段；订阅 <code>rt/nav/map_delete</code>；<code>lio_health</code> 加动态统计</td></tr>
+<tr><td><code>g1d_nav</code></td><td>动态层、视线穿透清除、人员点处理</td><td>订阅 <code>rt/nav/person_points</code></td></tr>
+<tr><td><code>g1d_web</code></td><td>动态点 / 人员点图层；动态点不进累积地图；关键帧录制；导出清理</td><td>—</td></tr>
+<tr><td><code>g1d_perception</code>（新，可选）</td><td>相机人员分割与点云关联</td><td>发布 <code>person_points</code>、<code>map_delete</code>、<code>perception_status</code></td></tr>
+</table>
+<div class="note"><b>为什么用字段而不是单独话题</b>原方案设想单独的 <code>rt/nav/dynamic_points</code>。实现时改为在 <code>registered_cloud</code> 中加 float32 字段 <code>dynamic</code>（<code>point_step</code> 16）：动静点同帧同位姿，下游不用做时间配对；只读 x / y / z 的旧程序完全不受影响。</div>
+
+<!-- ========================================================================================= -->
+<h2 id="s-mdet">5. 第一道：M-detector 逐点运动标注</h2>
+<h3>5.1 原理</h3>
+<p>M-detector 把最近约 1.6 s 的扫描按传感器位姿投影成 4 张球面深度图（每张覆盖 0.4 s），然后对当前帧每个点检查它和历史深度图的遮挡关系：</p>
+<figure>
+<svg viewBox="0 0 1000 250" role="img" aria-label="M-detector 三类判据示意">
+  <style>.t{font-size:13px;fill:#1f2329}.s{font-size:11.5px;fill:#5c6370}.ray{stroke:#94a3b8;stroke-width:1.2;stroke-dasharray:4 3}</style>
+  <g transform="translate(10,20)">
+    <text x="150" y="0" text-anchor="middle" class="t">Case 1：出现在原本空的地方</text>
+    <circle cx="20" cy="110" r="9" fill="#2563eb"/><text x="20" y="140" text-anchor="middle" class="s">雷达</text>
+    <line x1="260" y1="30" x2="260" y2="200" stroke="#94a3b8" stroke-width="4"/><text x="270" y="215" class="s">历史看到的墙</text>
+    <line x1="29" y1="110" x2="258" y2="110" class="ray"/>
+    <circle cx="150" cy="110" r="8" fill="#c2410c"/><text x="150" y="95" text-anchor="middle" class="s">当前点</text>
+    <text x="150" y="185" text-anchor="middle" class="s">挡住了 ≥ 3 张历史深度图里的静态背景</text>
+  </g>
+  <g transform="translate(345,20)">
+    <text x="150" y="0" text-anchor="middle" class="t">Case 2：沿视线远离</text>
+    <circle cx="20" cy="110" r="9" fill="#2563eb"/>
+    <line x1="29" y1="110" x2="290" y2="110" class="ray"/>
+    <circle cx="110" cy="110" r="7" fill="#cbd5e1"/><circle cx="160" cy="110" r="7" fill="#94a3b8"/><circle cx="210" cy="110" r="8" fill="#c2410c"/>
+    <text x="110" y="95" text-anchor="middle" class="s">t−2</text><text x="160" y="95" text-anchor="middle" class="s">t−1</text><text x="210" y="95" text-anchor="middle" class="s">当前</text>
+    <text x="150" y="185" text-anchor="middle" class="s">当前点被历史点递归遮挡</text>
+  </g>
+  <g transform="translate(680,20)">
+    <text x="150" y="0" text-anchor="middle" class="t">Case 3：沿视线靠近</text>
+    <circle cx="20" cy="110" r="9" fill="#2563eb"/>
+    <line x1="29" y1="110" x2="290" y2="110" class="ray"/>
+    <circle cx="230" cy="110" r="7" fill="#cbd5e1"/><circle cx="180" cy="110" r="7" fill="#94a3b8"/><circle cx="130" cy="110" r="8" fill="#c2410c"/>
+    <text x="230" y="95" text-anchor="middle" class="s">t−2</text><text x="180" y="95" text-anchor="middle" class="s">t−1</text><text x="130" y="95" text-anchor="middle" class="s">当前</text>
+    <text x="150" y="185" text-anchor="middle" class="s">当前点递归遮挡历史点</text>
+  </g>
+</svg>
+<figcaption>图 2　M-detector 的三类遮挡判据（Case 1 还要求附近没有深度相近的历史静态点，即"地图一致性"检查；它在倒装雷达下的问题见 5.4 与第 12 节）</figcaption>
+</figure>
+
+<h3>5.2 移植与接入</h3>
+<ol class="steps">
+  <li><b>先原样入库</b>：<code>DynObjFilter.h/.cpp</code>、<code>types.h</code>、<code>parallel_q.h</code>、<code>mid360.yaml</code>、LICENSE 原样提交（hku-mars @ <code>0645dab</code>），之后每处修改都可在 git 历史中追溯。</li>
+  <li><b>只改基础设施，判据原样</b>：去掉 ROS（参数改由 <code>ParamSource</code> 读取，名字保持上游的 <code>dyn_obj/…</code>）、OpenCV、PCL I/O；<code>std::execution::par</code>（依赖 TBB）换成 OpenMP；<code>boost::shared_ptr</code> 换成 <code>std::shared_ptr</code>；删除依赖完整 PCL 的 DBSCAN 聚类阶段。编译为独立的 GPL-2.0 静态库 <code>g1d_mdetector</code>。</li>
+  <li><b>接入位置</b>：FAST-LIO 在 EKF 更新之后、<code>map_incremental()</code> 之前调用标注回调，输入是去畸变后的完整扫描（雷达坐标系）和雷达在 LIO 世界系中的位姿。</li>
+  <li><b>点数上限</b>：每帧超过 <code>max_points</code>（配置 12000）就先抽稀送检，结果再按体素扩散回全部点（M-detector 的点池按每帧点数预分配，必须设上限）。</li>
+</ol>
+
+<h3>5.3 体素投票（替代原 DBSCAN 聚类）</h3>
+<p>M-detector 原始输出有孤立误检，也会漏掉人体边缘。我们在世界坐标系里按 0.15 m 体素做两步修正：</p>
+<ol class="steps green">
+  <li><b>投票</b>：体素被判为动态需同时满足：体素内动态点占比 ≥ 0.4，且 3×3×3 邻域内动态点 ≥ 3（去掉孤立误检）。</li>
+  <li><b>膨胀</b>：向有点的相邻体素扩展一格，补全贴地的腿部、人体边缘；这一步也把标签扩散给被抽稀掉的点。</li>
+</ol>
+
+<h3>5.4 为倒装雷达修改的参数</h3>
+<table>
+<tr><th>参数</th><th>上游 mid360.yaml</th><th>本项目</th><th>原因</th></tr>
+<tr><td><code>map_cons_hor_dis1 / ver_dis1</code></td><td>0.3 / 0.6 m</td><td>0.15 / 0.15 m</td><td>倒装雷达下人脚边的地面落进大窗口，腿被判"与地图一致"（详见第 12 节）</td></tr>
+<tr><td><code>max_depth_map_num</code></td><td>5</td><td>4</td><td>Orin NX 内存（每张深度图约 30 MB）</td></tr>
+<tr><td><code>frame_dur</code></td><td>0.02</td><td>0.1</td><td>本系统 10 Hz 帧</td></tr>
+<tr><td><code>cluster_coupled / future</code></td><td>true</td><td>false</td><td>聚类阶段已删除，由体素投票替代</td></tr>
+</table>
+<p class="small">保留上游的一个怪癖：键 <code>ver_resolution_max</code> 设置的是水平分辨率，反之亦然；默认值保持上游行为。</p>
+
+<!-- ========================================================================================= -->
+<h2 id="s-ikd">6. 第二道：FAST-LIO 地图插入把关</h2>
+<figure>
+<svg viewBox="0 0 1000 170" role="img" aria-label="地图插入把关流程">
+  <defs><marker id="ar2" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#64748b"/></marker></defs>
+  <style>.b{fill:#fff;stroke:#94a3b8;stroke-width:1.4}.t{font-size:13px;fill:#1f2329}.s{font-size:11.5px;fill:#5c6370}.l{stroke:#64748b;stroke-width:1.5;fill:none;marker-end:url(#ar2)}</style>
+  <rect x="10" y="40" width="170" height="70" rx="8" class="b"/><text x="95" y="68" text-anchor="middle" class="t">第 k 帧降采样点</text><text x="95" y="88" text-anchor="middle" class="s">+ 本帧动态标签</text>
+  <rect x="220" y="40" width="200" height="70" rx="8" class="b" style="fill:#e8f0fe"/><text x="320" y="64" text-anchor="middle" class="t">动态邻域排除</text><text x="320" y="84" text-anchor="middle" class="s">0.2 m 体素及 26 邻域内</text><text x="320" y="100" text-anchor="middle" class="s">的点直接丢弃</text>
+  <rect x="460" y="40" width="250" height="70" rx="8" class="b" style="fill:#e8f0fe"/><text x="585" y="64" text-anchor="middle" class="t">排队 3 帧（时间一致性）</text><text x="585" y="84" text-anchor="middle" class="s">k+1 … k+3 任一帧在附近</text><text x="585" y="100" text-anchor="middle" class="s">标出动态点 → 丢弃</text>
+  <rect x="750" y="40" width="230" height="70" rx="8" class="b" style="fill:#e7f6ec"/><text x="865" y="68" text-anchor="middle" class="t">插入 ikd-Tree</text><text x="865" y="88" text-anchor="middle" class="s">配准仍用已有地图</text>
+  <path d="M180,75 L217,75" class="l"/><path d="M420,75 L457,75" class="l"/><path d="M710,75 L747,75" class="l"/>
+  <text x="500" y="150" text-anchor="middle" class="s">另：相机确认的人 → rt/nav/map_delete → ikd-Tree.Delete_Point_Boxes（回溯删除已入库的点）</text>
+</svg>
+<figcaption>图 3　每一帧的点要经过两道关才能进入 FAST-LIO 地图</figcaption>
+</figure>
+<table>
+<tr><th>机制</th><th>为什么需要</th></tr>
+<tr><td><b>动态邻域排除</b></td><td>FAST-LIO 入库的是 0.3 m 降采样后的"质心点"，可能混合了人体和背景；只排除标签点本身不够，所以排除整个邻域。</td></tr>
+<tr><td><b>延迟 3 帧</b></td><td>M-detector 单帧召回约 0.7，任何一帧漏检都会让那部分人体永久进入地图。人 0.3 s 内只移动约 0.3 m，某帧漏检的部分通常在下一帧被邻近检出 —— 仿真中残留因此再减一半。</td></tr>
+<tr><td><b>按盒回溯删除</b></td><td>补救已经入库的点（例如人站着时没被标出、之后被相机确认）。</td></tr>
+</table>
+<div class="tip"><b>配准不受影响</b>延迟只作用于"新点入库"，当前帧仍与已有地图匹配；Mid-360 是 360° 视场，转身不会让大片区域突然缺图。仿真中开启后定位误差不变（0.03–0.04 m）。</div>
+
+<!-- ========================================================================================= -->
+<h2 id="s-costmap">7. 第三道：代价地图</h2>
+<h3 id="s-cm-voxel">7.1 静态体素层与"视线穿透清除"</h3>
+<p>体素层每个栅格存一列高度位掩码（0.08–1.85 m，每 0.1 m 一格）。改造后它<b>只用静态点标记</b>，清除有两种：</p>
+<ul>
+  <li><b>射线清除</b>（原有）：雷达到每个回波（含动态点）的三维射线穿过的体素被清除，只清射线真正穿过的高度，桌面这类悬空障碍不会被误清。但 Mid-360 是稀疏非重复扫描，射线不一定恰好穿过拖影所在的体素。</li>
+  <li><b>视线穿透清除</b>（新增）：用"方向"代替"射线"，覆盖面更大，同时保证看不见的不清。</li>
+</ul>
+<figure>
+<svg viewBox="0 0 1000 330" role="img" aria-label="视线穿透清除示意">
+  <style>.t{font-size:13px;fill:#1f2329}.s{font-size:11.5px;fill:#5c6370}.ray{stroke:#93c5fd;stroke-width:1.2}.vx{stroke-width:1.5}</style>
+  <circle cx="80" cy="165" r="70" fill="#fdeaea" stroke="#b91c1c" stroke-dasharray="4 3"/>
+  <text x="80" y="250" text-anchor="middle" class="s" fill="#b91c1c">盲区 0.6 m：不参与</text>
+  <circle cx="80" cy="165" r="10" fill="#2563eb"/><text x="80" y="140" text-anchor="middle" class="s">雷达</text>
+  <path d="M90,160 L900,60" class="ray"/><path d="M90,162 L900,80" class="ray"/><path d="M90,158 L900,40" class="ray"/>
+  <rect x="890" y="25" width="16" height="70" fill="#cbd5e1"/><text x="880" y="18" text-anchor="end" class="s">墙（回波）</text>
+  <rect x="440" y="88" width="34" height="34" fill="#fff1e6" stroke="#c2410c" class="vx"/>
+  <text x="457" y="80" text-anchor="middle" class="t" fill="#c2410c">A 拖影</text>
+  <text x="560" y="135" class="s">该方向最近回波在它身后 > 0.2 m</text><text x="560" y="152" class="s">→ 记 1 次证据，连续 2 帧 → <tspan fill="#15803d" font-weight="600">清除</tspan></text>
+  <path d="M90,175 L560,260" stroke="#e5e7eb" stroke-width="1.2" stroke-dasharray="3 3"/>
+  <rect x="380" y="225" width="34" height="34" fill="#e7f6ec" stroke="#15803d" class="vx"/>
+  <text x="397" y="282" text-anchor="middle" class="t" fill="#15803d">B 无回波方向</text>
+  <text x="430" y="300" class="s">车身遮挡 / 视场外：没有证据 → <tspan font-weight="600">保留</tspan></text>
+  <path d="M90,168 L250,180" class="ray"/>
+  <path d="M268,181 L558,186" stroke="#cbd5e1" stroke-width="1.2" stroke-dasharray="3 3"/>
+  <rect x="250" y="168" width="18" height="30" fill="#cbd5e1"/><text x="259" y="213" text-anchor="middle" class="s">近处遮挡物（回波）</text>
+  <rect x="560" y="168" width="34" height="34" fill="#e7f6ec" stroke="#15803d" class="vx"/>
+  <text x="577" y="222" text-anchor="middle" class="t" fill="#15803d">C 被遮挡</text>
+  <text x="610" y="190" class="s">该方向最近回波在它前面 → 没有证据 → <tspan font-weight="600">保留</tspan></text>
+</svg>
+<figcaption>图 4　视线穿透清除：只有"确实看穿了它"才清除，看不见的障碍永远保留</figcaption>
+</figure>
+<ol class="steps">
+  <li>把当前帧<b>所有</b>回波（静态 + 动态）按方向分成 2° 的格子，每格记下最近回波的距离。</li>
+  <li>对 6 m 内每个已占据体素，算出它的方向和距离 r：若该方向格有回波，且 r &lt; 最近回波距离 − 0.2 m（余量），说明视线越过了它，记一次证据（每个体素一个 2 位计数器）。</li>
+  <li>证据达到 2 帧即清除；期间该体素一旦再次被静态点标记，计数器归零（对细杆等不稳定目标更稳）。</li>
+  <li><b>保护规则</b>：方向格里没有回波（车身遮挡、视场外、雷达视场下方）不积累证据；距雷达 0.6 m 以内的体素不参与；没有任何按时间的衰减。</li>
+</ol>
+<div class="note"><b>为什么不用原方案的"视场锥加速衰减"</b>STVL 式衰减基于"视场锥内的体素应该每帧被看到"的假设，但 Mid-360 非重复扫描单帧覆盖不完整，车身还会遮挡视场锥的一部分，时间常数很难定。改用"有证据才清"后，不存在任何因为看不见而误清的路径，比衰减更安全。</div>
+
+<h3 id="s-cm-dyn">7.2 动态层</h3>
+<ul>
+  <li>动态点（M-detector 标签）和相机人员点只标记这一层：栅格记录最后一次被看到的时间，<b>0.8 s 内为致命障碍</b>，之后自动消失。高度带与体素层相同（0.08–1.85 m），只记 6 m 以内。</li>
+  <li>动态点的射线和方向回波<b>仍参与体素层清除</b>：人站过的地方如果之前被当成静态，也会被清掉。</li>
+  <li>相机人员点（<code>NavCore::onDynamicPoints</code>）：超过 0.5 s 的旧数据丢弃；先清除这些点周围 0.15 m（上下各一层）的体素 —— 处理 M-detector 漏检、已被当成静态的人 —— 再标记动态层。</li>
+</ul>
+
+<h3 id="s-cm-guard">7.3 与 guard 的关系</h3>
+<p>发给 guard 反射层的 <code>obstacle_points</code> 仍包含动态点：guard 不区分动静，只看"前方扫掠路径上有没有东西"。所以无论动态标签对不对，近距离停车行为完全不变。</p>
+
+<!-- ========================================================================================= -->
+<h2 id="s-dufo">8. 第四道：导出地图 DUFOMap 清理</h2>
+<p>前三道都是在线的，仍有两类残留躲不过：检测器刚启动、还没有历史深度图的头约 2 s；以及各帧都漏检的部分。导出地图时用 DUFOMap 离线再清一遍。</p>
+<ol class="steps orange">
+  <li><b>累积地图只收静态点</b>：Web 端按 5 cm 体素累积 <code>registered_cloud</code> 中 <code>dynamic = 0</code> 的点。</li>
+  <li><b>关键帧录制</b>：建图时自动录制（移动 0.3 m、转 0.3 rad 或间隔 5 s 一帧），存到 <code>recordings/&lt;时间&gt;/frames/*.pcd</code>。格式与 KTH DynamicMap 基准 / DUFOMap 工具相同：世界系点云，传感器位姿写在 PCD 的 <code>VIEWPOINT</code>，M-detector 标签写在 intensity 字段（同一体素里动静都有时保留动态标签，作训练正样本）。写入用临时文件 + 原子改名，导出时不会读到半帧。</li>
+  <li><b>导出清理</b>：DUFOMap 依次积累每帧"看穿的空间"（void），然后对累积地图的每个点查询 —— 落在 void 体素里的删除。参数：分辨率 0.1 m、<code>d_s</code> 0.2 m、<code>d_p</code> 1。</li>
+  <li><b>输出</b>：清理后的 <code>map.pcd</code> 和 <code>grid.png</code>，清理前另存 <code>map_raw.pcd</code>，<code>meta.json</code> 记录方法和移除点数。</li>
+</ol>
+<div class="warn"><b>两个实现细节</b>(1) DUFOMap 在<b>子进程</b>（<code>python -m g1d_web.mapclean</code>）中运行：与 CycloneDDS 同进程时在 Windows 上出现访问冲突；子进程失败时自动退回内置的射线清除。同一个命令也是 5090 上的离线工具。(2) 导出在后台线程进行，大地图清理期间网页不卡。</div>
+<p>没装 dufomap 时的<b>射线清除兜底</b>：每帧抽 4000 条射线，沿射线每半个体素采样一次，在回波前 max(2 体素, 距离的 10 %) 处停止（防止掠射的地面射线误清地面）；被"看穿"至少 2 次的体素中的地图点被删除。</p>
+
+<!-- ========================================================================================= -->
+<h2 id="s-cam">9. 第五道（可选）：相机识别静止的人</h2>
+<p>M-detector 靠"运动"判断，站着不动的人会被当成静态；他之后走开，就会在地图和代价地图里留下"人形障碍"。<code>g1d_perception</code> 用外观识别补上这一块。</p>
+<ol class="steps purple">
+  <li><b>取图</b>：从 teleimager 的 ZMQ 流取头部双目左半幅。图像流不带拍摄时间，按"接收时间 − 延迟"打时间戳（默认 0.06 s，待实测）。</li>
+  <li><b>分割</b>：YOLO-seg 人员实例分割，在 PC2 上以 TensorRT 引擎运行（模型由 5090 上 SAM 3 标注蒸馏而来，见第 10 节）。</li>
+  <li><b>投影</b>：外参链 IMU → 雷达（<code>lio.extrinsic</code>）→ 头部（<code>head_to_livox</code> 的逆）→ 相机（<code>head_to_camera</code>）；相机位姿按图像时间对 LIO 位姿插值（球面线性插值）；把图像时刻前后 0.25 s 内的雷达点投影到图像。腰部 / 升降锁定时头部与雷达刚性相连，直接用雷达位姿最准。</li>
+  <li><b>关联与深度门限</b>：取掩码内的投影点，以 20 % 分位深度作为人体前表面，只保留其后 0.6 m、其前 0.3 m 内的点 —— 掩码边缘和缝隙漏进来的背景墙点因此被拒绝；再用重力对齐的 odom 高度去掉脚下地面点（它们和脚同深度，深度门限分不开）。</li>
+  <li><b>确认</b>：按质心最近邻跟踪，0.7 m 门限；同一人连续 2 帧被看到才算确认，单帧误检永远不会删地图。</li>
+  <li><b>贴地安全的删除盒</b>：盒子在 odom 系中从离地 5 cm 起算、外扩 0.15 m，再把 8 个角点换回 LIO 系取包围盒；人脚下的地面保留。每人每 0.5 s 最多发一次。</li>
+  <li><b>输出</b>：<code>rt/nav/person_points</code>（给 <code>g1d_nav</code>）、<code>rt/nav/map_delete</code>（给 <code>g1d_lio</code>）、<code>rt/nav/perception_status</code>（帧数、人数、删除盒数、分割耗时）。</li>
+</ol>
+<div class="note"><b>为什么不进安全回路</b>相机延迟、外参误差、时间戳不准，都只会影响"人消失得多快、清得干不干净"。避障和停车完全由雷达几何（体素层、动态层、guard）负责；这个服务停掉，系统照常工作。</div>
+
+<!-- ========================================================================================= -->
+<h2 id="s-offline">10. 5090 离线链路</h2>
+<table>
+<tr><th>步骤</th><th>工具</th><th>说明</th></tr>
+<tr><td>1. 录数据</td><td><code>python -m g1d_perception.node --record datasets</code></td><td>机器人上录"相机图像 + 同步雷达点 + LIO 位姿"（每 0.5 s 一帧）</td></tr>
+<tr><td>2. 教师标注</td><td><code>python -m g1d_perception.tools.sam3_label datasets/&lt;会话&gt;</code></td><td>SAM 3 以文本提示 "person" 分割，转成 YOLO-seg 多边形标签；已有标签的帧跳过</td></tr>
+<tr><td>3. 蒸馏训练</td><td><code>python -m g1d_perception.tools.train_yolo_seg …</code></td><td>按会话 / 帧哈希固定划分训练 / 验证集，训练 YOLO11n-seg 等小模型，导出 ONNX</td></tr>
+<tr><td>4. 部署</td><td>PC2 上 <code>yolo export model=best.pt format=engine half=True</code></td><td>TensorRT 引擎必须在 Orin 本机构建（版本须与运行时一致）</td></tr>
+<tr><td>场景流数据（P4）</td><td><code>python -m g1d_perception.tools.flow_frames recordings/&lt;会话&gt;</code></td><td>每帧都录的关键帧 → 逐帧 DUFOMap 动态标签 + 位姿 + M-detector 标签（SeFlow 式自监督信号）</td></tr>
+<tr><td>离线清图</td><td><code>g1d-mapclean</code></td><td>机器人上装不了 dufomap 时，在 5090 上清理录下的地图</td></tr>
+</table>
+
+<!-- ========================================================================================= -->
+<h2 id="s-results">11. 验证结果（仿真）</h2>
+<h3>11.1 代价地图（<code>test_dynamic_sim</code>、<code>test_nav_units</code>）</h3>
+<table>
+<tr><th>场景</th><th>结果</th><th>验收</th></tr>
+<tr><td>行人横穿（机器人静止），拖影最长存在时间</td><td>仅射线清除 0.85 s；加穿透清除 0.85 s（超过 0.3 s 的拖影样本 248 → 160）；加真值标签 0.75 s</td><td>≤ 1 s ✔</td></tr>
+<tr><td>矮箱子靠近到视场下方，等待 30 s</td><td>箱子体素全部保留（最初看到 39 个，靠近过程中又看到更多，30 s 后 51 个）</td><td>≥ 30 s ✔</td></tr>
+<tr><td>行人横穿导航路径</td><td>无标签 36.9 s 到达，有标签 20.8 s 到达，均无碰撞</td><td>无碰撞 ✔</td></tr>
+<tr><td>单元测试：盲区内 / 无回波方向 / 被遮挡的体素</td><td>全部保留；被看穿的幽灵柱 2 帧后清除；关闭穿透清除时幽灵柱保留（对照）</td><td>—</td></tr>
+</table>
+<h3>11.2 M-detector 与 FAST-LIO 地图（<code>test_lio_units</code>、<code>test_lio_sim</code>）</h3>
+<table>
+<tr><th>场景</th><th>召回率</th><th>静态误检</th><th>地图残留（行人走廊，检测器有历史后）</th></tr>
+<tr><td>修参数前，倒装雷达</td><td>0.13–0.29</td><td>0</td><td>—</td></tr>
+<tr><td>单元场景（静止 / 平移 / 旋转 / 倒装），修参数 + 膨胀后</td><td>0.95–1.00</td><td>0</td><td>—</td></tr>
+<tr><td>房间场景，真值位姿，5000 / 20000 点每帧</td><td>0.78–0.85 / 0.90</td><td>0</td><td>—</td></tr>
+<tr><td>完整 LIO 闭环，10k 点每帧（送检约 5000）</td><td>0.67</td><td>0</td><td>73 → 24 点</td></tr>
+<tr><td>完整 LIO 闭环，20k 点每帧（真实 Mid-360S 密度）</td><td>0.74</td><td>5 / 255 万</td><td>72 → 12 点</td></tr>
+</table>
+<p>耗时（本机 x86）：1 万点约 7 ms，2 万点约 18 ms。Orin NX 预计慢 2–3 倍，因此默认 <code>max_points</code> 设为 12000，上机实测。</p>
+<h3>11.3 地图清理与相机（pytest）</h3>
+<table>
+<tr><th>项目</th><th>结果</th></tr>
+<tr><td>DUFOMap，<code>d_p</code> = 2（论文默认）</td><td>移动物体只清出 13 %</td></tr>
+<tr><td>DUFOMap，<code>d_p</code> = 1，<code>d_s</code> = 0.2 / 0.1</td><td>清出 95 % / 99 %，墙体保留 ≥ 99.5 %</td></tr>
+<tr><td>Web 端到端（<code>sim_stack.py --pedestrians 2</code>，浏览器实测）</td><td>动态点 / 人员点图层跟随行人，累积地图无拖影</td></tr>
+<tr><td>相机关联（掩码边缘故意外扩 6 像素）</td><td>背景墙点混入 0 个；地面以上精度 &gt; 0.99，召回 &gt; 0.9</td></tr>
+</table>
+<p class="small">测试总数：C++ 6 套全部通过；pytest 67 项全部通过（含 DDS 回环与 Web 端到端）。</p>
+
+<!-- ========================================================================================= -->
+<h2 id="s-debug">12. 开发中解决的关键问题</h2>
+<details open><summary>① 倒装雷达让 M-detector 召回只有 0.2</summary>
+<p>完整 LIO 闭环里召回只有 0.07，于是逐个排除假设：</p>
+<table>
+<tr><th>假设</th><th>实验</th><th>结论</th></tr>
+<tr><td>体素投票删掉了标签</td><td>对比投票前后的原始标签数</td><td>原始标签本身就少 → 不是</td></tr>
+<tr><td>移植有错误</td><td>受控单元场景（静止雷达、墙、横穿箱子）</td><td>召回 0.77、误检 0 → 移植正确</td></tr>
+<tr><td>点太稀疏</td><td>同场景 5000 点每帧</td><td>0.57，有影响但不是主因</td></tr>
+<tr><td>传感器在运动</td><td>平移 / 旋转</td><td>0.94 / 0.76 → 不是</td></tr>
+<tr><td>静止起步、没有背景历史</td><td>箱子先静止 2 s 再走</td><td>0.99 → 不是</td></tr>
+<tr><td><b>雷达倒装</b></td><td>同场景把雷达横滚 180°</td><td><b>0.29 → 找到了</b></td></tr>
+</table>
+<p>原因：倒装雷达朝下看，能看到人的腿和脚边的地面，两者深度相同。Case 1 的地图一致性检查在一个窗口（上游为 ±0.3 m × ±0.6 m）内找"与当前点深度相近的历史静态点"，找到就判为"与地图一致"→ 静态。脚边的地面让腿被判为静态；静态的腿留在深度图里，又让躯干落入同样的判断 —— <b>静态标签沿身体向上传播</b>。把窗口缩到 0.15 m 后召回升到 0.7–0.9，误检仍为 0。</p>
+</details>
+<details><summary>② DUFOMap 论文参数不适合 Mid-360 点密度</summary>
+<p>合成场景中 <code>d_p = 2</code> 只清出移动物体的 13 %。<code>d_p</code> 是"未知空间"的膨胀格数：Mid-360 每个 0.1 m 体素每帧只被一两条射线穿过，<code>d_p = 2</code> 要求周围两格也都确认为空，大部分移动物体体素因此停留在"未知"。改为 <code>d_p = 1</code> 后清出 95 %，墙体不受影响。另外发现 DUFOMap 对缓慢移动物体的<b>逐帧</b>标签不完整（物体与下一帧位置重叠，被当作命中），但不影响地图级清理。</p>
+</details>
+<details><summary>③ DUFOMap 与 CycloneDDS 同进程时访问冲突</summary>
+<p>Web 端到端测试在导出地图时挂起；故障转储显示一次 "access violation"。离线复现正常，只有与 DDS 同进程时出现。改为子进程运行（同时作为 5090 离线工具），子进程失败时退回射线清除。</p>
+</details>
+<details><summary>④ 导出改后台线程后测试挂起</summary>
+<p>原因是 WebSocket 关闭时无限等待一个已经不读数据的对端，而且这个挂起掩盖了测试本身的一处时序竞争（读到的是遥控生效前排队的旧状态）。关闭等待限时 1 s 并在超时时中断连接；测试改为等待"guard 已切换到遥控"的状态。连续 3 次通过。</p>
+</details>
+
+<!-- ========================================================================================= -->
+<h2 id="s-diff">13. 实现与原方案的差异</h2>
+<table>
+<tr><th>原方案</th><th>实际实现</th><th>原因</th></tr>
+<tr><td>单独话题 <code>rt/nav/dynamic_points</code></td><td><code>registered_cloud</code> 加 <code>dynamic</code> 字段</td><td>动静点同帧同位姿，无需配对；兼容旧程序</td></tr>
+<tr><td>视场锥加速衰减</td><td>视线穿透清除（有证据才清）</td><td>不按时间衰减，看不见的障碍不会被误清</td></tr>
+<tr><td>M-detector 原版 DBSCAN 聚类</td><td>体素投票 + 一格膨胀</td><td>原版依赖完整 PCL；投票方式召回更高、零误检</td></tr>
+<tr><td>动态点不入库</td><td>另加延迟插入 3 帧</td><td>单帧漏检的部分在后续帧被邻近检出，残留减半</td></tr>
+<tr><td>M-detector 参数照搬 <code>mid360.yaml</code></td><td>一致性窗口 0.15 m 等</td><td>倒装雷达</td></tr>
+<tr><td>DUFOMap (0.1, 0.2, 2)</td><td><code>d_p</code> = 1，子进程运行</td><td>点密度；进程隔离</td></tr>
+<tr><td>相机-雷达投影"用头部 FK"</td><td>雷达外参 × head_to_livox⁻¹ × head_to_camera，按图像时间插值 LIO 位姿</td><td>腰 / 升降锁定时头与雷达刚性相连</td></tr>
+</table>
+
+<!-- ========================================================================================= -->
+<h2 id="s-params">14. 参数速查（<code>config/g1d_nav.yaml</code>）</h2>
+<table>
+<tr><th>参数</th><th>默认</th><th>作用与调整建议</th></tr>
+<tr><td><code>lio.dynamic.enabled</code></td><td>true</td><td>M-detector 开关</td></tr>
+<tr><td><code>lio.dynamic.max_points</code></td><td>12000</td><td>每帧送检点数上限；Orin 上 <code>lio_health.label_ms</code> &gt; 20 ms 时调小</td></tr>
+<tr><td><code>lio.dynamic.refine_voxel / min_points / min_ratio / dilate</code></td><td>0.15 m / 3 / 0.4 / 1</td><td>误检多加大 <code>min_points</code>；人体漏检多加大 <code>dilate</code></td></tr>
+<tr><td><code>lio.dynamic.exclusion_voxel / map_delay_scans</code></td><td>0.2 m / 3</td><td>地图排除范围 / 延迟插入帧数（0 = 不延迟）</td></tr>
+<tr><td><code>lio.dynamic.m_detector</code></td><td><code>{}</code></td><td>按上游参数名覆盖 M-detector 参数</td></tr>
+<tr><td><code>costmap.common.voxel.see_through_bin_deg / margin / frames</code></td><td>2° / 0.2 m / 2</td><td>拖影清得慢时 <code>frames</code> 改 1；细杆闪烁时加大 <code>margin</code></td></tr>
+<tr><td><code>costmap.common.voxel.blind_radius</code></td><td>0.6 m</td><td>不做穿透清除的雷达附近半径</td></tr>
+<tr><td><code>costmap.common.dynamic.ttl_s</code></td><td>0.8 s</td><td>动态层保留时间</td></tr>
+<tr><td><code>costmap.common.dynamic.clear_radius / max_age_s</code></td><td>0.15 m / 0.5 s</td><td>人员点清除体素的半径 / 最大延迟</td></tr>
+<tr><td><code>web.keyframes.*</code></td><td>0.3 m / 0.3 rad / 0.5 s</td><td><code>min_dist</code> 与 <code>min_dt</code> 都设 0 则每帧都录（场景流数据）</td></tr>
+<tr><td><code>web.cleaning.method / resolution / d_s / d_p</code></td><td>auto / 0.1 / 0.2 / 1</td><td>不要用论文的 <code>d_p = 2</code></td></tr>
+<tr><td><code>perception.camera.K / dist / head_to_camera / latency_s</code></td><td>估计值（TBD）</td><td>必须标定</td></tr>
+<tr><td><code>perception.association.depth_band / confirm_hits</code></td><td>0.6 m / 2</td><td>人体前表面后多深仍算人 / 确认帧数</td></tr>
+</table>
+
+<!-- ========================================================================================= -->
+<h2 id="s-limits">15. 局限与上机待办</h2>
+<div class="grid2">
+<div class="card"><h4>已知局限</h4>
+<ul>
+  <li>人沿雷达视线方向走、或离雷达超过 5 m 时，M-detector 召回偏低（真值位姿下也只有 0.4–0.6）。</li>
+  <li>站着不动的人只能靠相机识别，需要标定和训练好的模型；相机只覆盖前方视场。</li>
+  <li>检测器启动后约 2 s 内进入地图的点，只能靠导出时的 DUFOMap 清理。</li>
+  <li>比里程计漂移还慢的运动无法检出（同类方法共有的限制）。</li>
+  <li>还没有运动预测（P4，计划换 Thor 后做）。</li>
+</ul></div>
+<div class="card"><h4>上机待办（<code>docs/DEPLOYMENT.md</code> P5 节）</h4>
+<ol>
+  <li>Orin NX 上 <code>label_ms</code> &lt; 20 ms；对比开关前后的定位误差（T3 恶化 ≤ 20 %）。</li>
+  <li>真人走过：代价地图 ≤ 1 s 恢复空闲；矮箱子进视场下方后保持；导出地图无残留。</li>
+  <li>相机标定 → 录数据 → 5090 上 SAM 3 标注、训练 → Orin 上导出 TensorRT → 启用 <code>g1d-perception</code>；验收 3 m 内召回 ≥ 95 %、&lt; 30 ms/帧。</li>
+  <li>确认 Orin（aarch64）能否装 dufomap；不能就在 5090 上用 <code>g1d-mapclean</code>。</li>
+</ol></div>
+</div>
+
+<!-- ========================================================================================= -->
+<h2 id="s-code">16. 代码位置</h2>
+<table>
+<tr><th>内容</th><th>路径</th></tr>
+<tr><td>代价地图（穿透清除、动态层、人员点）</td><td><code>src/nav/src/costmap/layers.cpp</code>、<code>layered_costmap.cpp</code>、<code>src/nav/src/nav_core.cpp</code></td></tr>
+<tr><td>M-detector 移植</td><td><code>third_party/m_detector/</code>（改动说明 <code>UPSTREAM.md</code>）</td></tr>
+<tr><td>M-detector 封装（体素投票、参数默认值）</td><td><code>src/lio/src/dynamic_detector.cpp</code></td></tr>
+<tr><td>FAST-LIO 接入（标注回调、延迟插入、按盒删除、地图快照）</td><td><code>third_party/fast_lio/src/laserMapping.cpp</code>、<code>src/lio/src/lio_estimator.cpp</code></td></tr>
+<tr><td>DDS（带标签点云、map_delete、person_points）</td><td><code>src/apps/dds_util.hpp</code>、<code>g1d_lio_main.cpp</code>、<code>g1d_nav_main.cpp</code></td></tr>
+<tr><td>Web：图层、关键帧、导出清理</td><td><code>python/g1d_web/{hub,app,mapping,mapclean}.py</code></td></tr>
+<tr><td>相机感知、5090 工具</td><td><code>python/g1d_perception/</code>、<code>python/g1d_perception/tools/</code></td></tr>
+<tr><td>仿真与测试</td><td><code>tests/test_dynamic_sim.cpp</code>、<code>test_lio_sim.cpp</code>、<code>test_lio_units.cpp</code>、<code>test_nav_units.cpp</code>；<code>python/tests/test_dynamic.py</code>、<code>test_perception.py</code>；<code>fake_nav --pedestrians</code></td></tr>
+<tr><td>部署</td><td><code>deploy/systemd/g1d-perception.service</code>、<code>deploy/run_all.sh --perception</code></td></tr>
+</table>
+
+<!-- ========================================================================================= -->
+<h2 id="s-refs">17. 参考资料</h2>
+<p class="small">编号与 <code>docs/DYNAMIC_OBJECTS_STUDY.md</code> 第 7 节一致，这里只列本页引用到的条目。</p>
+<ol class="refs">
+  <li value="1">Wu et al., <i>Moving event detection from LiDAR point streams</i>, Nature Communications 2024 — https://www.nature.com/articles/s41467-023-44554-8</li>
+  <li value="2">hku-mars/M-detector（GPL-2.0）— https://github.com/hku-mars/M-detector</li>
+  <li value="4">Duberg, Zhang et al., <i>DUFOMap</i>, RA-L 2024 — https://arxiv.org/abs/2403.01449</li>
+  <li value="5">KTH-RPL/dufomap（BSD-3）— https://github.com/KTH-RPL/dufomap</li>
+  <li value="6">Schmid et al., <i>Dynablox</i>, RA-L 2023 — https://arxiv.org/abs/2304.10049</li>
+  <li value="7">Jia et al., <i>BeautyMap</i>, RA-L 2024（Table I）— https://arxiv.org/abs/2405.07283</li>
+  <li value="8">Zhang et al., <i>A Dynamic Points Removal Benchmark in Point Cloud Maps</i>, ITSC 2023 — https://github.com/KTH-RPL/DynamicMap_Benchmark</li>
+  <li value="9">Nav2 STVL 教程 — https://docs.nav2.org/rolling/tutorials/general_tutorials/navigation2_with_stvl/</li>
+  <li value="10">STVL PR #357（3D 雷达视场锥遮挡）— https://github.com/SteveMacenski/spatio_temporal_voxel_layer/pull/357</li>
+  <li value="11">Yixin-F/better_fastlio2 — https://github.com/Yixin-F/better_fastlio2</li>
+  <li value="12">LeeWhisper/FAST-LIO-WithoutDynObj — https://github.com/LeeWhisper/FAST-LIO-WithoutDynObj</li>
+  <li value="13">Yuan et al., Dynamic-LIO — https://arxiv.org/abs/2407.03590</li>
+  <li value="14">RF-LIO — https://arxiv.org/abs/2206.09463</li>
+  <li value="17">LiMoSeg — https://arxiv.org/abs/2111.04875</li>
+  <li value="18">LiDAR-Motion-Segmentation/baseline-scripts — https://github.com/LiDAR-Motion-Segmentation/baseline-scripts</li>
+  <li value="20">Geometry-Aware Human Noise Removal via 2D Segmentation Projection — https://pmc.ncbi.nlm.nih.gov/articles/PMC12944119/</li>
+  <li value="21">Isaac ROS nvblox — https://nvidia-isaac-ros.github.io/concepts/scene_reconstruction/nvblox/index.html</li>
+  <li value="24">Isaac ROS nvblox 支持平台 — https://nvidia-isaac-ros.github.io/v/release-3.2/repositories_and_packages/isaac_ros_nvblox/index.html</li>
+  <li value="26">MinkowskiEngine Issue #620（sm_120）— https://github.com/NVIDIA/MinkowskiEngine/issues/620</li>
+  <li value="30">spconv Issue #746（Blackwell）— https://github.com/traveller59/spconv/issues/746</li>
+  <li value="34">Isaac ROS 4.0 nvblox Isaac Sim 示例 — https://nvidia-isaac-ros.github.io/v/release-4.0/concepts/scene_reconstruction/nvblox/tutorials/tutorial_isaac_sim.html</li>
+  <li value="35">Zhang et al., <i>SeFlow</i>, ECCV 2024 — https://arxiv.org/abs/2407.01702</li>
+  <li value="36">KTH-RPL/OpenSceneFlow — https://github.com/KTH-RPL/OpenSceneFlow</li>
+  <li value="41">Sonata (PTv3) on Jetson AGX Thor — https://zetic.ai/demos/sonata/</li>
+  <li value="42">facebookresearch/sam-3d-objects — https://github.com/facebookresearch/sam-3d-objects</li>
+  <li value="45">EmbodiedSAM（含 SAM3D 运行时间）— https://arxiv.org/abs/2408.11811</li>
+  <li value="46"><i>SAM 3: Segment Anything with Concepts</i> — https://arxiv.org/abs/2511.16719</li>
+  <li value="49"><i>Real-Time Tracing for Perception and Mapping Systems in ROS 2</i>（Wi-Fi 过载延迟）— https://arxiv.org/abs/2204.11778</li>
+</ol>
+</main>
+</body>
+</html>

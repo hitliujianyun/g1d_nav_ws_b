@@ -24,6 +24,7 @@ Mid-360S ─▶ g1d_lio (FAST-LIO2) ─▶ g1d_nav (代价地图 + NavFn + MPPI 
 | [`docs/CALIBRATION.md`](docs/CALIBRATION.md) | 外参、身体链、自身点框、底盘行为的标定步骤 |
 | [`docs/WEB_UI.md`](docs/WEB_UI.md) | Web 调试台使用说明 |
 | [`docs/DYNAMIC_OBJECTS_STUDY.md`](docs/DYNAMIC_OBJECTS_STUDY.md) | 动态物体过滤：调研、选型、最终方案（第 0 节）与实现结果（第 8 节） |
+| [`docs/DYNAMIC_OBJECTS.html`](docs/DYNAMIC_OBJECTS.html) | 动态物体滤除图解：选型历程、最终架构、五道机制的实现细节、验证结果与排查过程（浏览器打开） |
 | [`PLAN.md`](PLAN.md) | 开发计划、TODO、进度日志 |
 | `../design/G1D_LIO_MPPI_Nav_Plan.md` | 原始设计方案 |
 
